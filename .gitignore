@@ -1,0 +1,52 @@
+# ---- C++ / CMake ----
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.exe
+compile_commands.json
+.cache/
+
+# ---- Protobuf / gRPC generated ----
+*.pb.cc
+*.pb.h
+*.grpc.pb.cc
+*.grpc.pb.h
+/gen/
+
+# ---- Dependency managers ----
+vcpkg_installed/
+conan/
+_deps/
+
+# ---- Python (semantic module, later) ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ---- Node / dashboard (later) ----
+node_modules/
+dist/
+.vite/
+*.local
+
+# ---- Data / runtime artifacts ----
+data/
+*.rocksdb/
+*.wal
+*.log
+/tmp/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
