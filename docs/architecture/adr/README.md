@@ -19,12 +19,12 @@ Copy an existing one as a template.
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-language-cpp20.md) | Core language: C++20 | Accepted |
+| [0002](0002-storage-engine-rocksdb.md) | Embedded storage engine: RocksDB | Accepted |
+| [0003](0003-dependency-manager-vcpkg.md) | C++ dependency manager: vcpkg | Accepted |
+| [0005](0005-metadata-single-node-m1.md) | Metadata: single node for M1 | Accepted (M1) |
+| [0006](0006-search-index-document-partitioned.md) | Search index: partition by document | Accepted |
 
 ### Upcoming ADRs to write
 
-- **0002** — Storage engine: RocksDB vs LevelDB vs SQLite.
-- **0003** — Dependency manager & build: vcpkg vs Conan.
-- **0004** — Replication & consistency model (quorum, ack semantics).
-- **0005** — Metadata: single node for M1 vs Raft-replicated from the start.
-- **0006** — Search index sharding key (by document vs by term).
-- **0007** — Inverted-index on-disk format & posting-list compression.
+- **0004** — Replication & consistency model (quorum, ack semantics) — *Phase 1*.
+- **0007** — Inverted-index on-disk format & posting-list compression — *Phase 3*.
