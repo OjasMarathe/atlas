@@ -23,9 +23,15 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-${{ runner.os }}-
 
-      - name: Bootstrap vcpkg
+      - name: Bootstrap vcpkg (pinned to the manifest baseline)
+        # Clone a *full* vcpkg and check out the exact commit pinned in vcpkg.json's
+        # "builtin-baseline", so CI resolves the identical dependency versions as local dev.
+        # (A shallow clone of vcpkg's tip would NOT contain the pinned baseline commit,
+        #  which is what made the first CI run fail at Configure.)
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          BASELINE=$(jq -r '."builtin-baseline"' vcpkg.json)
+          git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          git -C "$VCPKG_ROOT" checkout "$BASELINE"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Configure (installs deps via vcpkg manifest)
