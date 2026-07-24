@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "atlas",
+  "version": "0.1.0",
+  "description": "Atlas - distributed enterprise knowledge platform",
+  "homepage": "https://github.com/OjasMarathe/atlas",
+  "dependencies": [
+    "grpc",
+    "gtest"
+  ],
+  "builtin-baseline": "3ddaad9be959816602453ecb05533f8732464ef4"
+}

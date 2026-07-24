@@ -113,4 +113,27 @@ Workflow: [docs/plan/collaboration.md](docs/plan/collaboration.md).
 
 ## Building & running
 
-_TBD — added in Phase 0 once the build system and node skeleton land._
+**Prerequisites:** a C++20 compiler, CMake ≥ 3.24, Ninja, Docker, and
+[vcpkg](https://github.com/microsoft/vcpkg). gRPC / Protobuf / GoogleTest are pulled
+automatically by vcpkg from [`vcpkg.json`](vcpkg.json).
+
+```bash
+# one-time: install vcpkg and point VCPKG_ROOT at it
+git clone --depth 1 https://github.com/microsoft/vcpkg ~/vcpkg
+~/vcpkg/bootstrap-vcpkg.sh
+export VCPKG_ROOT=~/vcpkg            # add this to your shell profile
+
+# configure + build (first run is slow: vcpkg compiles gRPC, then caches)
+cmake --preset default
+cmake --build build
+
+# run the 3-node cluster natively and watch the heartbeats
+./scripts/run-cluster-local.sh
+
+# ...or in containers
+docker compose up --build
+```
+
+Phase 0's `atlas_node` is a skeleton: it serves `StorageService.Heartbeat` and pings its peers,
+proving the toolchain, proto codegen, gRPC networking, and multi-node wiring end to end. Real
+storage/search behavior arrives in Phases 1–4.

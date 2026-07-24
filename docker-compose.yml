@@ -1,0 +1,29 @@
+# Phase 0: a 3-node local cluster. Each node serves StorageService.Heartbeat and pings the
+# other two every few seconds. `docker compose up --build` and watch the heartbeat logs.
+# The image is built once and reused by all three services.
+services:
+  node1:
+    build: .
+    image: atlas-node
+    environment:
+      ATLAS_NODE_ID: node1
+      ATLAS_LISTEN: 0.0.0.0:50051
+      ATLAS_PEERS: node2:50051,node3:50051
+    ports:
+      - "50051:50051"
+
+  node2:
+    build: .
+    image: atlas-node
+    environment:
+      ATLAS_NODE_ID: node2
+      ATLAS_LISTEN: 0.0.0.0:50051
+      ATLAS_PEERS: node1:50051,node3:50051
+
+  node3:
+    build: .
+    image: atlas-node
+    environment:
+      ATLAS_NODE_ID: node3
+      ATLAS_LISTEN: 0.0.0.0:50051
+      ATLAS_PEERS: node1:50051,node2:50051
