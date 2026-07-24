@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package atlas;
+
+import "common.proto";
+
+// Runs on every storage node. Owns chunk bytes on local disk (RocksDB, ADR-0002) with a WAL
+// and per-chunk SHA-256 checksums verified on read.
+// See docs/architecture/system-architecture.md (write path / read path).
+service StorageService {
+  // Client-streamed: a chunk (<= 4 MiB) can exceed gRPC's default 4 MB message limit, and
+  // frames let us hash incrementally. The first frame MUST be the header, then data frames.
+  rpc PutChunk(stream ChunkFrame) returns (PutChunkResponse);
+
+  rpc GetChunk(GetChunkRequest) returns (stream ChunkFrame);
+
+  rpc DeleteChunk(DeleteChunkRequest) returns (Status);
+
+  // Primary → replica push to reach the replication factor and to self-heal (Phase 2).
+  rpc ReplicateChunk(stream ChunkFrame) returns (PutChunkResponse);
+
+  // Liveness for failure detection (Phase 2). Cheap and frequent.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// Streaming envelope. Frame 1 = header (chunk_id + expected size); frames 2..n = data bytes.
+message ChunkFrame {
+  oneof kind {
+    ChunkHandle header = 1;   // sent exactly once, first
+    bytes data = 2;           // one or more data frames follow
+  }
+}
+
+message PutChunkResponse {
+  ChunkHandle stored = 1;
+  Status status = 2;                 // CHECKSUM_MISMATCH if computed != declared chunk_id
+  repeated string replicated_to = 3; // node_ids this write was fanned out to (primary fills in)
+}
+
+message GetChunkRequest {
+  string chunk_id = 1;
+  bool verify_checksum = 2;          // recompute SHA-256 on read (default true server-side)
+}
+
+message DeleteChunkRequest { string chunk_id = 1; }
+
+message HeartbeatRequest {
+  string from_node_id = 1;
+  uint64 ring_version_seen = 2;      // lets the peer detect a stale ring view
+}
+
+message HeartbeatResponse {
+  Status status = 1;
+  uint64 ring_version = 2;           // peer's current ring version
+  uint64 free_bytes = 3;             // TODO(co-design): expose for placement/balancing?
+  uint64 used_bytes = 4;
+}

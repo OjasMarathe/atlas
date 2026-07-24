@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package atlas;
+
+import "google/protobuf/timestamp.proto";
+
+// Shared types used across all Atlas services.
+// Contract-first: edit here, regenerate stubs, then implement. See proto/README.md.
+
+// ── Cluster membership ───────────────────────────────────────────────────────
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  STORAGE     = 1;   // stores chunks
+  SEARCH      = 2;   // owns a shard's inverted index (document-partitioned, ADR-0006)
+  METADATA    = 3;   // authoritative chunk map + ring (single node for M1, ADR-0005)
+  COORDINATOR = 4;   // client-facing query fan-out
+}
+
+message NodeInfo {
+  string node_id = 1;              // stable id, e.g. "storage-1"
+  string address = 2;              // host:port for gRPC
+  repeated Role roles = 3;
+}
+
+// Snapshot of the consistent-hashing ring / membership (see concepts/consistent-hashing.md).
+// Versioned so stale readers are detectable; kept stable so a future Raft backing (ADR-0005)
+// needs no caller changes.
+message RingState {
+  uint64 version = 1;                  // monotonically increasing
+  repeated NodeInfo nodes = 2;
+  uint32 virtual_nodes_per_node = 3;   // vnodes per physical node (load balancing)
+}
+
+// ── Content addressing ───────────────────────────────────────────────────────
+
+// A chunk is a <= 4 MiB block, content-addressed by the hex SHA-256 of its bytes.
+message ChunkHandle {
+  string chunk_id = 1;             // hex SHA-256 of the chunk's bytes
+  uint64 size = 2;                 // bytes, <= 4 MiB
+}
+
+// Where a chunk's replicas live: [primary, secondary, tertiary] (replication factor 3).
+message ChunkPlacement {
+  ChunkHandle chunk = 1;
+  repeated string node_ids = 2;    // ordered; node_ids[0] == primary
+}
+
+// ── Errors ───────────────────────────────────────────────────────────────────
+
+// Prefer gRPC status codes on the wire; this carries domain-specific detail in responses.
+message Status {
+  enum Code {
+    OK                = 0;
+    NOT_FOUND         = 1;
+    ALREADY_EXISTS    = 2;
+    CHECKSUM_MISMATCH = 3;
+    UNAVAILABLE       = 4;
+    PERMISSION_DENIED = 5;   // Phase 7 (security)
+    INTERNAL          = 6;
+  }
+  Code code = 1;
+  string message = 2;
+}
