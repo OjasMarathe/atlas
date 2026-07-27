@@ -52,6 +52,6 @@ message HeartbeatRequest {
 message HeartbeatResponse {
   Status status = 1;
   uint64 ring_version = 2;           // peer's current ring version
-  uint64 free_bytes = 3;             // TODO(co-design): expose for placement/balancing?
-  uint64 used_bytes = 4;
+  // Per-node load stats (free/used bytes) for placement/balancing arrive in Phase 2, when
+  // self-healing/rebalancing actually consumes them — added as fields 3+ then (wire-compatible).
 }

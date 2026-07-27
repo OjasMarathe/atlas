@@ -11,9 +11,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -25,6 +27,21 @@
 #include "storage.grpc.pb.h"
 
 namespace {
+
+// Set by the signal handler, polled by the shutdown-watcher thread. std::atomic<bool> is
+// lock-free on every platform we target, so it is safe to touch from a signal handler.
+std::atomic<bool> g_stop{false};
+
+void OnSignal(int /*sig*/) { g_stop.store(true); }
+
+std::mutex g_log_mutex;
+
+void Log(const std::string& node, const std::string& msg) {
+  // Serialize writes: Log() runs on both the RPC and heartbeat threads, and a bare
+  // `std::cout <<` chain from multiple threads can interleave mid-line.
+  std::lock_guard<std::mutex> lock(g_log_mutex);
+  std::cout << "[" << node << "] " << msg << std::endl;
+}
 
 std::string EnvOr(const char* key, const std::string& fallback) {
   const char* v = std::getenv(key);
@@ -39,10 +56,6 @@ std::vector<std::string> Split(const std::string& s, char delim) {
     if (!tok.empty()) out.push_back(tok);
   }
   return out;
-}
-
-void Log(const std::string& node, const std::string& msg) {
-  std::cout << "[" << node << "] " << msg << std::endl;
 }
 
 }  // namespace
@@ -83,6 +96,13 @@ int main() {
   Log(id, "listening on " + listen +
               " | peers: " + (peers.empty() ? "(none)" : EnvOr("ATLAS_PEERS", "")));
 
+  // Graceful shutdown: SIGINT/SIGTERM (e.g. `docker compose down`) flip g_stop; a watcher
+  // thread then calls server->Shutdown(), which unblocks server->Wait() below so the cleanup
+  // path actually runs. We shut down from a normal thread because Shutdown() is not
+  // async-signal-safe to call directly from the handler.
+  std::signal(SIGINT, OnSignal);
+  std::signal(SIGTERM, OnSignal);
+
   std::atomic<bool> running{true};
   std::thread heartbeats([&] {
     std::this_thread::sleep_for(std::chrono::seconds(2));  // let peers come up
@@ -104,8 +124,17 @@ int main() {
     }
   });
 
-  server->Wait();
+  std::thread watcher([&] {
+    while (!g_stop.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    Log(id, "shutdown signal received, stopping...");
+    server->Shutdown();
+  });
+
+  server->Wait();  // returns once the watcher calls Shutdown()
   running.store(false);
   heartbeats.join();
+  watcher.join();
   return 0;
 }

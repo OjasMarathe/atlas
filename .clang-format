@@ -1,0 +1,6 @@
+# Atlas C++ style: Google base, wider column limit to match our code.
+BasedOnStyle: Google
+ColumnLimit: 100
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Preserve

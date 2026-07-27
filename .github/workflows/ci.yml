@@ -42,3 +42,21 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: clang-tidy (advisory static analysis on our sources)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y clang-tidy
+          clang-tidy -p build src/node/main.cpp tests/smoke_test.cpp
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      # Advisory until we pin a shared clang-format version (CI's apt version may differ from
+      # local, so a hard --Werror check could flag harmless version-to-version formatting drift).
+      - name: Check formatting
+        continue-on-error: true
+        run: clang-format --dry-run --Werror src/node/main.cpp tests/smoke_test.cpp
