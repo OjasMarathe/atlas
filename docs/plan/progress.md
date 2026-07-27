@@ -9,6 +9,12 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-07
 
+- **2026-07-21** — [Phase 0] Decisions locked & recorded as ADRs: **vcpkg** (0003), **single
+  metadata node for M1** (0005), **document-partitioned search index** (0006), **RocksDB** engine
+  (0002). Drafted `proto/` v0 contracts (common, storage, metadata, search, coordinator) —
+  awaiting joint review. Toolchain probe: have cmake 4.1 / ninja / Apple clang 15 (C++20) /
+  docker / brew; **missing vcpkg, gRPC, gh**. Repo pushed to github.com/OjasMarathe/atlas. — Ojas
+
 - **2026-07-20** — [Phase 0] Repo initialized (`main`), docs scaffolded: overview, roadmap,
   collaboration model, system architecture, ADR-0001 (C++20), concepts hub + template +
   two flagship notes (consistent-hashing, BM25). Decisions locked: **C++20 core**,
@@ -18,15 +24,24 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## Backlog / next up
 
-- [ ] **Phase 0** — CMake + dependency manager (vcpkg/Conan) decision → ADR-0002.
-- [ ] **Phase 0** — Draft `proto/` contracts (Metadata, Storage, Search, Coordinator) — *co-design together*.
-- [ ] **Phase 0** — Single-node gRPC health-check skeleton + docker-compose 3-node cluster.
-- [ ] **Phase 0** — GitHub Actions CI (build + test).
-- [ ] **ADR-0002** — storage engine (RocksDB vs LevelDB vs SQLite).
-- [ ] **ADR-0003** — replication & consistency model.
+- [x] **Phase 0** — dependency manager + engine + metadata + sharding decisions → ADRs 0002/0003/0005/0006.
+- [x] **Phase 0** — draft `proto/` v0 contracts (common, storage, metadata, search, coordinator).
+- [ ] **Phase 0** — review `proto/` v0 together (Harshal) → merge.
+- [ ] **Phase 0** — bootstrap vcpkg + `vcpkg.json` manifest (grpc, protobuf, rocksdb, boost, gtest).
+- [ ] **Phase 0** — CMake wiring (proto/grpc codegen) → compiles on both machines.
+- [ ] **Phase 0** — single-node gRPC health-check skeleton + docker-compose 3-node cluster.
+- [ ] **Phase 0** — GitHub Actions CI (build + test, vcpkg binary cache).
+- [ ] install `gh` on both machines (`brew install gh`) for the PR workflow.
+- [ ] **ADR-0004** — replication & consistency (ack semantics) — Phase 1.
+- [ ] **ADR-0007** — inverted-index format & posting-list compression — Phase 3.
+
+## Resolved decisions
+
+- Deps: **vcpkg** (0003) · Metadata: **single node for M1** (0005) · Search sharding:
+  **partition by document** (0006) · Engine: **RocksDB** (0002) · Language: **C++20** (0001).
 
 ## Open questions to resolve together
 
-- vcpkg vs Conan for dependencies?
-- Single metadata node for M1 (simpler) vs Raft-replicated metadata from the start?
-- Sharding key for the search index — by document, by term, or by node-owned corpus?
+- Boolean/phrase/filter parsing — in the search shard or the coordinator? (`search.proto` TODO)
+- Expose per-node free/used bytes in heartbeats for placement/balancing? (`storage.proto` TODO)
+- Replication ack semantics for Phase 1 (primary + how many replicas before we ack)? → ADR-0004

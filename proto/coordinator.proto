@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package atlas;
+
+import "search.proto";   // reuses ScoredDoc
+
+// The client-facing entry point. Stateless: parses the query, scatter-gathers to all search
+// shards in parallel, merges their local top-Ks into a global top-K, enforces ACLs (later),
+// and caches (LRU/LFU, Phase 4). See docs/architecture/system-architecture.md (read path).
+service CoordinatorService {
+  rpc Query(QueryRequest) returns (QueryResponse);
+}
+
+message QueryRequest {
+  string query = 1;
+  uint32 top_k = 2;
+  string user = 3;              // for ACL enforcement (Phase 7)
+}
+
+message QueryResponse {
+  repeated ScoredDoc hits = 1;  // global top-K after merge
+  uint32 shards_queried = 2;
+  uint32 shards_responded = 3;  // < shards_queried signals partial results under node failure
+  double latency_ms = 4;
+}

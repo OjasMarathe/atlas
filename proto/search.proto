@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package atlas;
+
+import "common.proto";
+
+// Runs on each search shard. Owns a document-partitioned local inverted index (ADR-0006):
+// it indexes only the documents whose chunks live on its co-located storage node.
+// Tokenize -> inverted index -> BM25 (concepts/bm25.md). Searches THIS shard only;
+// the coordinator fans out and merges.
+service SearchService {
+  rpc IndexDocument(IndexDocumentRequest) returns (Status);
+  rpc Search(SearchRequest) returns (SearchResponse);   // local shard top-K
+  rpc Suggest(SuggestRequest) returns (SuggestResponse); // Trie autocomplete (Phase 3b)
+  rpc Stats(StatsRequest) returns (ShardStats);
+}
+
+message IndexDocumentRequest {
+  string file_id = 1;
+  string text = 2;                       // extracted plain text, pre-tokenization
+  map<string, string> fields = 3;        // author/title/type/lang for filters (Phase 3b)
+}
+
+message SearchRequest {
+  string query = 1;
+  uint32 top_k = 2;
+  // TODO(co-design): where do boolean/phrase/filters get parsed — here or coordinator-side?
+}
+
+message ScoredDoc {
+  string file_id = 1;
+  double score = 2;                      // BM25 score
+  string snippet = 3;                    // highlighted match context
+}
+
+message SearchResponse {
+  repeated ScoredDoc hits = 1;           // this shard's local top-K
+  ShardStats stats = 2;                  // enables later global-stat correction (bm25.md)
+}
+
+message SuggestRequest {
+  string prefix = 1;
+  uint32 limit = 2;
+}
+message SuggestResponse { repeated string suggestions = 1; }
+
+message StatsRequest {}
+message ShardStats {
+  uint64 doc_count = 1;
+  uint64 unique_terms = 2;
+  double avg_doc_len = 3;                // avgdl for BM25
+}

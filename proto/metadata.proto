@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package atlas;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+
+// The authoritative control plane. Single node for M1 (ADR-0005), persisted to RocksDB+WAL.
+// Owns: file -> chunk -> node map, versions, and the consistent-hashing ring/membership.
+service MetadataService {
+  rpc RegisterFile(RegisterFileRequest) returns (FileMetadata);  // returns the assigned version
+  rpc GetFile(GetFileRequest) returns (FileMetadata);
+  rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+
+  // Ring / membership.
+  rpc GetRing(GetRingRequest) returns (RingState);
+  rpc UpdateMembership(UpdateMembershipRequest) returns (RingState);  // node join/leave -> new ring
+
+  // A node/coordinator reports a peer it believes is dead (Phase 2 self-healing input).
+  rpc ReportFailure(FailureReport) returns (Status);
+}
+
+message FileMetadata {
+  string file_id = 1;
+  string owner = 2;
+  uint64 version = 3;
+  repeated ChunkPlacement chunks = 4;    // ordered chunk list for the file
+  uint32 replication_factor = 5;
+  string sha256 = 6;                     // whole-file digest
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp modified_at = 8;
+  // ACLs / permissions: Phase 7 (security)
+}
+
+message RegisterFileRequest {
+  string file_id = 1;                    // empty -> metadata assigns one
+  string owner = 2;
+  repeated ChunkPlacement chunks = 3;
+  uint32 replication_factor = 4;
+  string sha256 = 5;
+}
+
+message GetFileRequest {
+  string file_id = 1;
+  uint64 version = 2;                    // 0 -> latest
+}
+
+message ListVersionsRequest { string file_id = 1; }
+message ListVersionsResponse { repeated FileMetadata versions = 1; }
+
+message GetRingRequest {}
+
+message UpdateMembershipRequest {
+  NodeInfo node = 1;
+  enum Change {
+    CHANGE_UNSPECIFIED = 0;
+    JOIN  = 1;
+    LEAVE = 2;
+  }
+  Change change = 2;
+}
+
+message FailureReport {
+  string dead_node_id = 1;
+  string reporter_node_id = 2;
+}

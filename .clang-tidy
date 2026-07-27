@@ -1,0 +1,13 @@
+# Static analysis for Atlas. Advisory in CI for now; tighten to blocking as the code matures.
+# Runs on our own sources (src/, tests/), not generated protobuf/gRPC code.
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -modernize-use-nodiscard
+WarningsAsErrors: ''
+HeaderFilterRegex: '^$'

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build cmake pkg-config
+
+      - name: Cache vcpkg binary artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Bootstrap vcpkg (pinned to the manifest baseline)
+        # Clone a *full* vcpkg and check out the exact commit pinned in vcpkg.json's
+        # "builtin-baseline", so CI resolves the identical dependency versions as local dev.
+        # (A shallow clone of vcpkg's tip would NOT contain the pinned baseline commit,
+        #  which is what made the first CI run fail at Configure.)
+        run: |
+          BASELINE=$(jq -r '."builtin-baseline"' vcpkg.json)
+          git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          git -C "$VCPKG_ROOT" checkout "$BASELINE"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Configure (installs deps via vcpkg manifest)
+        run: cmake --preset default
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: clang-tidy (advisory static analysis on our sources)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y clang-tidy
+          clang-tidy -p build src/node/main.cpp tests/smoke_test.cpp
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      # Advisory until we pin a shared clang-format version (CI's apt version may differ from
+      # local, so a hard --Werror check could flag harmless version-to-version formatting drift).
+      - name: Check formatting
+        continue-on-error: true
+        run: clang-format --dry-run --Werror src/node/main.cpp tests/smoke_test.cpp

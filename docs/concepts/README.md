@@ -53,6 +53,7 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 - [ ] boolean-phrase-search — AND/OR/NOT + positional phrase matching
 
 ### Distributed query engine (Phase 4)
+- [ ] index-sharding — document- vs term-partitioning (ADR-0006)
 - [ ] scatter-gather — fan-out, merge, global top-K
 - [ ] lru-lfu-cache — eviction policies compared
 - [ ] thread-pool — bounded worker pool + task queue
