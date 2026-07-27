@@ -52,7 +52,7 @@ add_executable(atlas_node src/node/main.cpp)
 target_link_libraries(atlas_node PRIVATE atlas_proto gRPC::grpc++ gRPC::grpc++_reflection)
 
 # ---- Phase 1: distributed file system ----
-add_library(atlas_common STATIC src/common/sha256.cpp)
+add_library(atlas_common STATIC src/common/sha256.cpp src/common/hash_ring.cpp)
 target_include_directories(atlas_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 add_library(atlas_dfs STATIC src/dfs/chunking.cpp)
@@ -68,3 +68,7 @@ add_test(NAME atlas_tests COMMAND atlas_tests)
 add_executable(chunking_test tests/chunking_test.cpp)
 target_link_libraries(chunking_test PRIVATE atlas_dfs)
 add_test(NAME chunking_test COMMAND chunking_test)
+
+add_executable(hash_ring_test tests/hash_ring_test.cpp)
+target_link_libraries(hash_ring_test PRIVATE atlas_common)
+add_test(NAME hash_ring_test COMMAND hash_ring_test)
