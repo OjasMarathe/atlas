@@ -51,8 +51,20 @@ protobuf_generate(
 add_executable(atlas_node src/node/main.cpp)
 target_link_libraries(atlas_node PRIVATE atlas_proto gRPC::grpc++ gRPC::grpc++_reflection)
 
+# ---- Phase 1: distributed file system ----
+add_library(atlas_common STATIC src/common/sha256.cpp)
+target_include_directories(atlas_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+add_library(atlas_dfs STATIC src/dfs/chunking.cpp)
+target_link_libraries(atlas_dfs PUBLIC atlas_common)
+
 # ---- tests ----
 enable_testing()
 add_executable(atlas_tests tests/smoke_test.cpp)
 target_link_libraries(atlas_tests PRIVATE atlas_proto GTest::gtest)
 add_test(NAME atlas_tests COMMAND atlas_tests)
+
+# Dependency-free (no gRPC/GTest): builds and runs even without the vcpkg deps.
+add_executable(chunking_test tests/chunking_test.cpp)
+target_link_libraries(chunking_test PRIVATE atlas_dfs)
+add_test(NAME chunking_test COMMAND chunking_test)

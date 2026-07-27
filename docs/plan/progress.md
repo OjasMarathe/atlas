@@ -9,6 +9,13 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-07
 
+- **2026-07-27** — [Phase 1] Phase 0 PR #1 merged to `main`. Started Phase 1 (DFS) on
+  `phase-1/dfs`: ADR-0004 (2-of-3 replication, W=2/R=1) + `module-01-dfs` design. **Piece #1 done
+  + verified** — from-scratch SHA-256 (`src/common/sha256`, matches FIPS vectors) + chunking
+  (`src/dfs/chunking`), 16/16 tests passing (built dependency-free via clang++ to sidestep the slow
+  gRPC build). Concept notes: chunking, sha256-checksums. gRPC vcpkg build still caching (needed for
+  the storage-node pieces + the heartbeat demo). — Ojas
+
 - **2026-07-21** — [Phase 0] Decisions locked & recorded as ADRs: **vcpkg** (0003), **single
   metadata node for M1** (0005), **document-partitioned search index** (0006), **RocksDB** engine
   (0002). Drafted `proto/` v0 contracts (common, storage, metadata, search, coordinator) —
