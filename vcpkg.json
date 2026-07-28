@@ -6,7 +6,8 @@
   "homepage": "https://github.com/OjasMarathe/atlas",
   "dependencies": [
     "grpc",
-    "gtest"
+    "gtest",
+    "rocksdb"
   ],
   "builtin-baseline": "3ddaad9be959816602453ecb05533f8732464ef4"
 }

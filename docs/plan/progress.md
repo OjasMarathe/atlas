@@ -9,6 +9,13 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-07
 
+- **2026-07-28** — [Phase 1] Verified + landed: **#4 consistent-hashing ring** (`src/common/hash_ring`,
+  13/13 tests incl. the minimal-movement property) and **#2 storage layer 1** — RocksDB-backed
+  `ChunkStore` (`src/storage/chunk_store`, checksum-on-write/read + crash-durable, verified vs real
+  RocksDB 11.x; caught the 11.x `DB::Open` signature change). Phase 0 heartbeat demo ran (3 nodes +
+  failure detection); node log-flush fix. Concept notes: wal, chunking, sha256-checksums;
+  consistent-hashing marked implemented. Next: gRPC StorageService wrapper. — Ojas
+
 - **2026-07-27** — [Phase 1] Phase 0 PR #1 merged to `main`. Started Phase 1 (DFS) on
   `phase-1/dfs`: ADR-0004 (2-of-3 replication, W=2/R=1) + `module-01-dfs` design. **Piece #1 done
   + verified** — from-scratch SHA-256 (`src/common/sha256`, matches FIPS vectors) + chunking

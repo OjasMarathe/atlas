@@ -19,6 +19,7 @@ endif()
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
+find_package(RocksDB CONFIG REQUIRED)
 
 # ---- generated gRPC/protobuf stubs from proto/ (the co-designed contracts) ----
 set(ATLAS_PROTOS
@@ -58,6 +59,9 @@ target_include_directories(atlas_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
 add_library(atlas_dfs STATIC src/dfs/chunking.cpp)
 target_link_libraries(atlas_dfs PUBLIC atlas_common)
 
+add_library(atlas_storage STATIC src/storage/chunk_store.cpp)
+target_link_libraries(atlas_storage PUBLIC atlas_common RocksDB::rocksdb)
+
 # ---- tests ----
 enable_testing()
 add_executable(atlas_tests tests/smoke_test.cpp)
@@ -72,3 +76,7 @@ add_test(NAME chunking_test COMMAND chunking_test)
 add_executable(hash_ring_test tests/hash_ring_test.cpp)
 target_link_libraries(hash_ring_test PRIVATE atlas_common)
 add_test(NAME hash_ring_test COMMAND hash_ring_test)
+
+add_executable(chunk_store_test tests/chunk_store_test.cpp)
+target_link_libraries(chunk_store_test PRIVATE atlas_storage RocksDB::rocksdb)
+add_test(NAME chunk_store_test COMMAND chunk_store_test)

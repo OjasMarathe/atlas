@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -79,6 +80,9 @@ class NodeService final : public atlas::StorageService::Service {
 };
 
 int main() {
+  // Line-buffer stdout so logs appear in real time even when redirected to a file or pipe.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
   const std::string id = EnvOr("ATLAS_NODE_ID", "node-0");
   const std::string listen = EnvOr("ATLAS_LISTEN", "0.0.0.0:50051");
   const std::vector<std::string> peers = Split(EnvOr("ATLAS_PEERS", ""), ',');
