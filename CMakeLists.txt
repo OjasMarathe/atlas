@@ -65,6 +65,10 @@ target_link_libraries(atlas_storage PUBLIC atlas_common RocksDB::rocksdb)
 add_library(atlas_storage_svc STATIC src/storage/storage_service.cpp)
 target_link_libraries(atlas_storage_svc PUBLIC atlas_storage atlas_proto gRPC::grpc++)
 
+add_library(atlas_metadata STATIC src/metadata/metadata_store.cpp)
+target_include_directories(atlas_metadata PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(atlas_metadata PUBLIC atlas_proto RocksDB::rocksdb)
+
 # ---- tests ----
 enable_testing()
 add_executable(atlas_tests tests/smoke_test.cpp)
@@ -87,3 +91,7 @@ add_test(NAME chunk_store_test COMMAND chunk_store_test)
 add_executable(storage_service_test tests/storage_service_test.cpp)
 target_link_libraries(storage_service_test PRIVATE atlas_storage_svc gRPC::grpc++)
 add_test(NAME storage_service_test COMMAND storage_service_test)
+
+add_executable(metadata_store_test tests/metadata_store_test.cpp)
+target_link_libraries(metadata_store_test PRIVATE atlas_metadata RocksDB::rocksdb)
+add_test(NAME metadata_store_test COMMAND metadata_store_test)

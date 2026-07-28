@@ -31,7 +31,7 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 - [ ] replication — primary/secondary/tertiary placement & write path
 - [x] [wal](wal.md) — write-ahead logging for crash consistency
 - [x] [sha256-checksums](sha256-checksums.md) — integrity & content addressing
-- [ ] versioning — copy-on-write file versions
+- [x] [versioning](versioning.md) — copy-on-write file versions
 - [ ] garbage-collection — reclaiming dead chunks/versions
 - [ ] merkle-tree — efficient replica divergence detection *(stretch)*
 
