@@ -50,7 +50,7 @@ protobuf_generate(
 
 # ---- Phase 0 node skeleton ----
 add_executable(atlas_node src/node/main.cpp)
-target_link_libraries(atlas_node PRIVATE atlas_proto gRPC::grpc++ gRPC::grpc++_reflection)
+target_link_libraries(atlas_node PRIVATE atlas_storage_svc gRPC::grpc++_reflection)
 
 # ---- Phase 1: distributed file system ----
 add_library(atlas_common STATIC src/common/sha256.cpp src/common/hash_ring.cpp)
@@ -61,6 +61,9 @@ target_link_libraries(atlas_dfs PUBLIC atlas_common)
 
 add_library(atlas_storage STATIC src/storage/chunk_store.cpp)
 target_link_libraries(atlas_storage PUBLIC atlas_common RocksDB::rocksdb)
+
+add_library(atlas_storage_svc STATIC src/storage/storage_service.cpp)
+target_link_libraries(atlas_storage_svc PUBLIC atlas_storage atlas_proto gRPC::grpc++)
 
 # ---- tests ----
 enable_testing()
@@ -80,3 +83,7 @@ add_test(NAME hash_ring_test COMMAND hash_ring_test)
 add_executable(chunk_store_test tests/chunk_store_test.cpp)
 target_link_libraries(chunk_store_test PRIVATE atlas_storage RocksDB::rocksdb)
 add_test(NAME chunk_store_test COMMAND chunk_store_test)
+
+add_executable(storage_service_test tests/storage_service_test.cpp)
+target_link_libraries(storage_service_test PRIVATE atlas_storage_svc gRPC::grpc++)
+add_test(NAME storage_service_test COMMAND storage_service_test)

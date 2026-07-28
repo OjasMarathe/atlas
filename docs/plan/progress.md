@@ -14,7 +14,9 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
   `ChunkStore` (`src/storage/chunk_store`, checksum-on-write/read + crash-durable, verified vs real
   RocksDB 11.x; caught the 11.x `DB::Open` signature change). Phase 0 heartbeat demo ran (3 nodes +
   failure detection); node log-flush fix. Concept notes: wal, chunking, sha256-checksums;
-  consistent-hashing marked implemented. Next: gRPC StorageService wrapper. — Ojas
+  consistent-hashing marked implemented. **#2 layer 2 done + verified**: gRPC StorageService over the ChunkStore (put/get/delete/replicate/
+  heartbeat) + loopback integration test, wired into atlas_node (a real storage node now); 5/5 tests
+  green. Next: metadata service (#3) or replication (#5). — Ojas
 
 - **2026-07-27** — [Phase 1] Phase 0 PR #1 merged to `main`. Started Phase 1 (DFS) on
   `phase-1/dfs`: ADR-0004 (2-of-3 replication, W=2/R=1) + `module-01-dfs` design. **Piece #1 done
