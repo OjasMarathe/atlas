@@ -43,14 +43,14 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 - [ ] quorum-consistency — R/W quorums, why R+W>N
 
 ### Search engine (Phase 3)
-- [ ] tokenization-stemming — text → normalized terms (+ stop-words)
-- [ ] inverted-index — term → posting list; the core data structure
+- [x] [tokenization-stemming](tokenization-stemming.md) — text → normalized terms (+ stop-words)
+- [x] [inverted-index](inverted-index.md) — term → posting list; the core data structure
 - [ ] posting-list-compression — delta + varint/gap encoding
 - [x] [bm25](bm25.md) — the ranking function
 - [ ] incremental-indexing — updating the index without full rebuilds
 - [ ] trie-autocomplete — prefix completion
 - [ ] bk-tree-levenshtein — fuzzy/spell-correct via edit distance
-- [ ] boolean-phrase-search — AND/OR/NOT + positional phrase matching
+- [x] [boolean-phrase-search](boolean-phrase-search.md) — AND/OR/NOT + skip pointers *(phrase matching designed, built in 3b)*
 
 ### Distributed query engine (Phase 4)
 - [ ] index-sharding — document- vs term-partitioning (ADR-0006)

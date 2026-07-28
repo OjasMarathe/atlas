@@ -47,7 +47,9 @@ jobs:
         continue-on-error: true
         run: |
           sudo apt-get install -y clang-tidy
-          clang-tidy -p build src/node/main.cpp tests/smoke_test.cpp
+          clang-tidy -p build src/node/main.cpp tests/smoke_test.cpp \
+            src/search/*.cpp src/common/query/*.cpp tools/*.cpp \
+            tests/search/*.cpp tests/common/query/*.cpp
 
   lint:
     runs-on: ubuntu-latest
@@ -59,4 +61,7 @@ jobs:
       # local, so a hard --Werror check could flag harmless version-to-version formatting drift).
       - name: Check formatting
         continue-on-error: true
-        run: clang-format --dry-run --Werror src/node/main.cpp tests/smoke_test.cpp
+        run: |
+          clang-format --dry-run --Werror src/node/main.cpp tests/smoke_test.cpp \
+            src/search/*.cpp src/search/*.h src/common/query/*.cpp src/common/query/*.h \
+            tools/*.cpp tests/search/*.cpp tests/common/query/*.cpp

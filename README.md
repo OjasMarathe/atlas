@@ -113,19 +113,25 @@ Workflow: [docs/plan/collaboration.md](docs/plan/collaboration.md).
 
 ## Building & running
 
-**Prerequisites:** a C++20 compiler, CMake ≥ 3.24, Ninja, Docker, and
+**Prerequisites:** a C++20 compiler, CMake ≥ 3.24, Ninja, Docker, `pkg-config`, and
 [vcpkg](https://github.com/microsoft/vcpkg). gRPC / Protobuf / GoogleTest are pulled
 automatically by vcpkg from [`vcpkg.json`](vcpkg.json).
+On macOS: `brew install cmake ninja pkg-config autoconf automake clang-format`.
 
 ```bash
-# one-time: install vcpkg and point VCPKG_ROOT at it
-git clone --depth 1 https://github.com/microsoft/vcpkg ~/vcpkg
-~/vcpkg/bootstrap-vcpkg.sh
+# one-time: install vcpkg at the baseline pinned in vcpkg.json
+#   NOTE: a full clone, not --depth 1 — a shallow clone of vcpkg's tip does NOT contain the
+#   pinned "builtin-baseline" commit, and Configure then fails to resolve dependencies.
+git clone https://github.com/microsoft/vcpkg ~/vcpkg
+git -C ~/vcpkg checkout "$(jq -r '."builtin-baseline"' vcpkg.json)"
+~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 export VCPKG_ROOT=~/vcpkg            # add this to your shell profile
 
-# configure + build (first run is slow: vcpkg compiles gRPC, then caches)
+# configure + build + test (first run is slow: vcpkg compiles gRPC & OpenSSL from source,
+# ~30-60 min, then caches to ~/.cache/vcpkg so later builds are fast)
 cmake --preset default
 cmake --build build
+ctest --test-dir build --output-on-failure
 
 # run the 3-node cluster natively and watch the heartbeats
 ./scripts/run-cluster-local.sh
@@ -133,6 +139,11 @@ cmake --build build
 # ...or in containers
 docker compose up --build
 ```
+
+**Sanitizers:** `cmake --preset default -DATLAS_SANITIZE=undefined` (see
+[`CMakeLists.txt`](CMakeLists.txt)). AddressSanitizer is known to hang before `main()` on
+macOS 26 / Apple clang 17 — even for a trivial program — so prefer `undefined` locally and let
+Linux CI or the Docker image exercise `address`.
 
 Phase 0's `atlas_node` is a skeleton: it serves `StorageService.Heartbeat` and pings its peers,
 proving the toolchain, proto codegen, gRPC networking, and multi-node wiring end to end. Real

@@ -26,6 +26,8 @@
 #include "common.pb.h"
 #include "storage.grpc.pb.h"
 
+#include "search/search_service.h"
+
 namespace {
 
 // Set by the signal handler, polled by the shutdown-watcher thread. std::atomic<bool> is
@@ -84,10 +86,14 @@ int main() {
   const std::vector<std::string> peers = Split(EnvOr("ATLAS_PEERS", ""), ',');
 
   NodeService service(id);
+  // Every node also serves its own search shard (ADR-0006: a shard indexes the documents whose
+  // chunks live on its co-located storage node). Empty until something calls IndexDocument.
+  atlas::search::SearchServiceImpl search_service;
   grpc::EnableDefaultHealthCheckService(true);
   grpc::ServerBuilder builder;
   builder.AddListeningPort(listen, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
+  builder.RegisterService(&search_service);
   std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
   if (!server) {
     std::cerr << "[" << id << "] failed to bind " << listen << std::endl;
