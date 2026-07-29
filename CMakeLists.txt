@@ -69,6 +69,13 @@ add_library(atlas_metadata STATIC src/metadata/metadata_store.cpp)
 target_include_directories(atlas_metadata PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(atlas_metadata PUBLIC atlas_proto RocksDB::rocksdb)
 
+add_library(atlas_metadata_svc STATIC src/metadata/metadata_service.cpp)
+target_link_libraries(atlas_metadata_svc PUBLIC atlas_metadata atlas_common gRPC::grpc++)
+
+# ---- ingestion / read client: chunk -> replicate via ring -> register; read-around on download ----
+add_library(atlas_client STATIC src/client/client.cpp)
+target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_proto gRPC::grpc++)
+
 # ---- tests ----
 enable_testing()
 add_executable(atlas_tests tests/smoke_test.cpp)
@@ -95,3 +102,12 @@ add_test(NAME storage_service_test COMMAND storage_service_test)
 add_executable(metadata_store_test tests/metadata_store_test.cpp)
 target_link_libraries(metadata_store_test PRIVATE atlas_metadata RocksDB::rocksdb)
 add_test(NAME metadata_store_test COMMAND metadata_store_test)
+
+add_executable(metadata_service_test tests/metadata_service_test.cpp)
+target_link_libraries(metadata_service_test PRIVATE atlas_metadata_svc gRPC::grpc++)
+add_test(NAME metadata_service_test COMMAND metadata_service_test)
+
+# End-to-end Milestone-1 test: metadata + storage nodes + the ingestion client, all in-process.
+add_executable(phase1_e2e_test tests/phase1_e2e_test.cpp)
+target_link_libraries(phase1_e2e_test PRIVATE atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME phase1_e2e_test COMMAND phase1_e2e_test)

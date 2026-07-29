@@ -9,6 +9,17 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-07
 
+- **2026-07-29** — [Phase 1] **DFS complete — Milestone 1 achieved.** Finished the control + data
+  plane: **MetadataService** (`src/metadata/metadata_service`, gRPC over the versioned store + the
+  hash ring; join/leave membership) and the **ingestion client** (`src/client/`) — Upload chunks a
+  file, places each chunk on 3 ring-chosen nodes, acks at **W=2**, commits to metadata; Download
+  reads back with **read-around** over healthy replicas + whole-file checksum. **End-to-end test**
+  (`phase1_e2e_test`: real metadata + 4 storage nodes) proves upload → chunk on 3 distinct nodes →
+  download → **kill a replica → still served via read-around** → re-upload → versioning. **8/8 tests
+  green.** Concept note: replication. Left to Phase 2 (same machinery as self-healing): automatic
+  chunk **migration on node join** + **re-replication** of a lost copy, and GC of dead chunks. Also
+  pending: reconcile `main.cpp`/CMake/docs with Harshal's Phase-3 PR #4 at merge. — Ojas
+
 - **2026-07-28** — [Phase 1] Verified + landed: **#4 consistent-hashing ring** (`src/common/hash_ring`,
   13/13 tests incl. the minimal-movement property) and **#2 storage layer 1** — RocksDB-backed
   `ChunkStore` (`src/storage/chunk_store`, checksum-on-write/read + crash-durable, verified vs real
