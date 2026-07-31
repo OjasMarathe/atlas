@@ -9,6 +9,17 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Serialize linking (Ninja job pool). Every executable here statically links gRPC + protobuf +
+# RocksDB, and a Debug link of one of those peaks well over a gigabyte. Ninja otherwise runs
+# `cores + 2` links at once, which is what OOM-killed the CI runner once the Phase 2 and Phase 3
+# targets landed in the same tree (14 executables). Compilation stays fully parallel — this
+# throttles the link step only, and costs a few seconds locally.
+set(ATLAS_LINK_JOBS "1" CACHE STRING "Concurrent link jobs (Ninja only); raise if you have RAM")
+if(CMAKE_GENERATOR MATCHES "Ninja")
+  set_property(GLOBAL PROPERTY JOB_POOLS atlas_link=${ATLAS_LINK_JOBS})
+  set(CMAKE_JOB_POOL_LINK atlas_link)
+endif()
+
 # Sanitizers (ADR-0001 mitigation). Opt-in, and selectable — because AddressSanitizer hangs in
 # dyld's initializers before main() on macOS 26 / Apple clang 17 (reproducible with an empty
 # main), so a macOS dev needs UBSan without ASan:
