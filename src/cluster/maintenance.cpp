@@ -31,10 +31,16 @@ MaintenanceReport ClusterMaintenance::RunOnce() {
   const RingState ring = snapshot_();
 
   std::vector<ProbeTarget> targets;
+  std::vector<std::string> members;
   targets.reserve(ring.nodes_size());
+  members.reserve(ring.nodes_size());
   for (const NodeInfo& node : ring.nodes()) {
     targets.push_back(ProbeTarget{node.node_id(), node.address()});
+    members.push_back(node.node_id());
   }
+  // Drop liveness state for nodes that have left: they are no longer probed, so a failure count
+  // recorded just before they left would never be cleared and they'd read as dead forever.
+  tracker_.Retain(members);
   prober_.ProbeOnce(targets);
 
   // Report liveness *changes* only — logging the same dead node every round is noise.

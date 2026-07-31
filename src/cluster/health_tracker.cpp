@@ -1,6 +1,7 @@
 #include "cluster/health_tracker.h"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace atlas {
 
@@ -9,6 +10,13 @@ void HealthTracker::RecordSuccess(const std::string& node_id) { failures_[node_i
 void HealthTracker::RecordFailure(const std::string& node_id) { ++failures_[node_id]; }
 
 void HealthTracker::Forget(const std::string& node_id) { failures_.erase(node_id); }
+
+void HealthTracker::Retain(const std::vector<std::string>& members) {
+  const std::unordered_set<std::string> keep(members.begin(), members.end());
+  for (auto it = failures_.begin(); it != failures_.end();) {
+    it = keep.count(it->first) == 0 ? failures_.erase(it) : std::next(it);
+  }
+}
 
 bool HealthTracker::IsAlive(const std::string& node_id) const {
   const auto it = failures_.find(node_id);

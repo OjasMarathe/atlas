@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <shared_mutex>
 #include <unordered_set>
 #include <utility>
 
@@ -53,6 +55,10 @@ uint64_t MetadataStore::LatestVersion(const std::string& file_id) const {
 
 FileMetadata MetadataStore::RegisterFile(FileMetadata meta) {
   if (!db_) return meta;
+  // Exclusive: both the version allocation below and the location merge further down are
+  // read-modify-write. Two concurrent registrations of the same file would otherwise pick the
+  // same `next` and one would silently overwrite the other's version.
+  const std::unique_lock<std::shared_mutex> lock(mutex_);
   const uint64_t next = LatestVersion(meta.file_id()) + 1;
   meta.set_version(next);
   if (!meta.has_created_at()) SetNow(meta.mutable_created_at());
@@ -113,6 +119,7 @@ void MetadataStore::FillLiveLocations(FileMetadata* meta) const {
 
 void MetadataStore::AddChunkLocation(const std::string& chunk_id, const std::string& node_id) {
   if (!db_) return;
+  const std::unique_lock<std::shared_mutex> lock(mutex_);
   ChunkPlacement placement = LoadLocations(chunk_id);
   for (const std::string& existing : placement.node_ids()) {
     if (existing == node_id) return;  // already recorded
@@ -128,6 +135,7 @@ void MetadataStore::AddChunkLocation(const std::string& chunk_id, const std::str
 
 void MetadataStore::RemoveChunkLocation(const std::string& chunk_id, const std::string& node_id) {
   if (!db_) return;
+  const std::unique_lock<std::shared_mutex> lock(mutex_);
   const ChunkPlacement current = LoadLocations(chunk_id);
   ChunkPlacement updated;
   updated.mutable_chunk()->CopyFrom(current.chunk());
@@ -143,6 +151,7 @@ void MetadataStore::RemoveChunkLocation(const std::string& chunk_id, const std::
 }
 
 std::vector<std::string> MetadataStore::ChunkLocations(const std::string& chunk_id) const {
+  const std::shared_lock<std::shared_mutex> lock(mutex_);
   const ChunkPlacement placement = LoadLocations(chunk_id);
   return {placement.node_ids().begin(), placement.node_ids().end()};
 }
@@ -150,6 +159,7 @@ std::vector<std::string> MetadataStore::ChunkLocations(const std::string& chunk_
 std::vector<std::string> MetadataStore::AllChunkIds() const {
   std::vector<std::string> ids;
   if (!db_) return ids;
+  const std::shared_lock<std::shared_mutex> lock(mutex_);
   const std::string prefix = kLocPrefix;
   std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions()));
   for (it->Seek(prefix); it->Valid(); it->Next()) {
@@ -162,6 +172,10 @@ std::vector<std::string> MetadataStore::AllChunkIds() const {
 
 bool MetadataStore::GetFile(const std::string& file_id, uint64_t version, FileMetadata* out) const {
   if (!db_) return false;
+  // Shared, but held across the whole read: resolving "latest", loading that blob and then
+  // overlaying live locations must see one consistent snapshot, or a concurrent RegisterFile can
+  // make GetFile serve a version blob alongside a *different* version's holders.
+  const std::shared_lock<std::shared_mutex> lock(mutex_);
   if (version == 0) {
     version = LatestVersion(file_id);
     if (version == 0) return false;
@@ -176,6 +190,7 @@ bool MetadataStore::GetFile(const std::string& file_id, uint64_t version, FileMe
 std::vector<FileMetadata> MetadataStore::ListVersions(const std::string& file_id) const {
   std::vector<FileMetadata> out;
   if (!db_) return out;
+  const std::shared_lock<std::shared_mutex> lock(mutex_);
   const std::string prefix = VerPrefix(file_id);
   std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions()));
   for (it->Seek(prefix); it->Valid(); it->Next()) {

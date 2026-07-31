@@ -75,6 +75,17 @@ int main() {
     tracker.Forget("n3");  // node left the cluster
     CHECK(tracker.IsAlive("n3"));
     CHECK(tracker.DeadNodes().empty());
+
+    // Retain() is what the maintenance loop calls each round: a node that leaves while failing
+    // must not be reported dead forever, since nothing probes it any more to clear the count.
+    tracker.RecordFailure("gone");
+    tracker.RecordFailure("gone");
+    tracker.RecordFailure("gone");
+    CHECK_EQ(tracker.DeadNodes(), (std::vector<std::string>{"gone"}));
+    tracker.Retain({"n1", "n2"});  // "gone" is no longer a member
+    CHECK(tracker.DeadNodes().empty());
+    CHECK_EQ(tracker.ConsecutiveFailures("gone"), 0);
+    CHECK_EQ(tracker.ConsecutiveFailures("n2"), 1);  // surviving members keep their state
   }
 
   // ---- Prober against real storage nodes ----

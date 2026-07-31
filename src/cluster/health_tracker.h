@@ -19,6 +19,12 @@ class HealthTracker {
   void RecordFailure(const std::string& node_id);
   void Forget(const std::string& node_id);  // node left the cluster entirely
 
+  // Drop every tracked node that is no longer a cluster member. Without this a node that leaves
+  // while it happened to be failing stays in the map at its last failure count forever — nothing
+  // probes it any more, so nothing can ever reset it, and DeadNodes() reports a node that simply
+  // left as permanently down.
+  void Retain(const std::vector<std::string>& members);
+
   // A node with fewer than `threshold` consecutive failures is alive. A node never probed is
   // considered alive: it just joined, and treating the unprobed as dead would declare a whole
   // fresh cluster dead at startup.

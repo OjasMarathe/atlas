@@ -9,6 +9,39 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-08
 
+- **2026-08-01** — [Phase 2] **PR #7 merged with `main` (now Phase 0+1+3) and reviewed.** 13/13
+  test targets green, clang-format clean.
+  - **Conflicts resolved:** `CMakeLists.txt` (one `atlas_node` links both tracks — storage +
+    search shard *and* metadata service + maintenance, since `ATLAS_ROLE` picks the role at
+    runtime); `src/node/main.cpp` (body auto-merged; header comment rewritten for both roles —
+    `ATLAS_PEERS` is gone, the Phase-0 peer ping is superseded by the real prober); the ADR index
+    (each side listed the other's ADR as "upcoming" — now 0007 *and* 0009 are indexed, only 0008
+    outstanding, plus a duplicated 0004 row dropped); `README.md`; `progress.md`.
+  - **Review fix — a real lost-update race.** Phase 2 gave the metadata node a *second* writer:
+    the maintenance loop's healer holds a raw `MetadataStore*` and never goes through
+    `MetadataService`, so the service's mutex protected nothing against it. `AddChunkLocation`,
+    `RemoveChunkLocation` and `RegisterFile`'s holder merge are all read-modify-write on the same
+    `c/<chunk_id>` key, and RocksDB's per-operation atomicity does not make a RMW atomic. A
+    re-upload racing a repair could drop a holder from the index — leaving a replica that exists
+    on disk invisible to readers *and* to the healer, which would then re-copy the bytes every
+    round forever. `MetadataStore` is now internally thread-safe (`std::shared_mutex`; shared for
+    reads, exclusive for the RMW paths), and the service's mutex was narrowed to the
+    ring/membership it actually owns. Same fix closes a second hole: concurrent `RegisterFile`s
+    for one file could both pick the same next version.
+  - **Review fix — `docker compose up --build` was broken.** `CMakeLists` declares
+    `tools/search_demo.cpp` and `tools/atlas_cli.cpp`, but the Dockerfile never copied `tools/`,
+    and CMake validates every declared source path at configure time. CI never caught it because
+    CI doesn't build the image. Also, `docker-compose.yml` documents
+    `docker compose exec metadata atlas nodes`, but the `atlas` CLI was never built into or
+    installed in the image — both fixed.
+  - **Review fix — `HealthTracker::Forget` had a unit test and no caller.** A node that left the
+    ring while failing kept its failure count forever (nothing probes it, so nothing can reset
+    it), so `DeadNodes()` reported a cleanly-departed node as permanently down and the map grew
+    without bound. Added `Retain(members)`, called once per maintenance round, + a test.
+  - `scripts/run-cluster-local.sh` still set the removed `ATLAS_PEERS` and started no metadata
+    node, so nothing registered into the ring — rewritten for the role model (1 metadata + 3
+    self-registering storage). — Harshal
+
 - **2026-08-01** — [Phase 2] **Node-join migration — Phases 1 and 2 are now DoD-complete.** 12/12
   tests green.
   - **`Healer::RebalanceOnce`** — the other half of placement maintenance. Repair reacts to
