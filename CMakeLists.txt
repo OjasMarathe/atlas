@@ -65,6 +65,11 @@ target_link_libraries(atlas_storage PUBLIC atlas_common RocksDB::rocksdb)
 add_library(atlas_storage_svc STATIC src/storage/storage_service.cpp)
 target_link_libraries(atlas_storage_svc PUBLIC atlas_storage atlas_proto gRPC::grpc++)
 
+# Chunk streaming over StorageService, shared by the ingestion client and the healer.
+add_library(atlas_chunk_transfer STATIC src/storage/chunk_transfer.cpp)
+target_include_directories(atlas_chunk_transfer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(atlas_chunk_transfer PUBLIC atlas_proto gRPC::grpc++)
+
 add_library(atlas_metadata STATIC src/metadata/metadata_store.cpp)
 target_include_directories(atlas_metadata PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(atlas_metadata PUBLIC atlas_proto RocksDB::rocksdb)
@@ -72,9 +77,18 @@ target_link_libraries(atlas_metadata PUBLIC atlas_proto RocksDB::rocksdb)
 add_library(atlas_metadata_svc STATIC src/metadata/metadata_service.cpp)
 target_link_libraries(atlas_metadata_svc PUBLIC atlas_metadata atlas_common gRPC::grpc++)
 
+# ---- Phase 2: cluster health (failure detection) + self-healing ----
+add_library(atlas_cluster STATIC
+  src/cluster/health_tracker.cpp
+  src/cluster/prober.cpp
+  src/cluster/healer.cpp
+)
+target_link_libraries(atlas_cluster
+  PUBLIC atlas_common atlas_proto atlas_metadata atlas_chunk_transfer gRPC::grpc++)
+
 # ---- ingestion / read client: chunk -> replicate via ring -> register; read-around on download ----
 add_library(atlas_client STATIC src/client/client.cpp)
-target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_proto gRPC::grpc++)
+target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_chunk_transfer atlas_proto gRPC::grpc++)
 
 # ---- tests ----
 enable_testing()
@@ -106,6 +120,16 @@ add_test(NAME metadata_store_test COMMAND metadata_store_test)
 add_executable(metadata_service_test tests/metadata_service_test.cpp)
 target_link_libraries(metadata_service_test PRIVATE atlas_metadata_svc gRPC::grpc++)
 add_test(NAME metadata_service_test COMMAND metadata_service_test)
+
+add_executable(health_tracker_test tests/health_tracker_test.cpp)
+target_link_libraries(health_tracker_test PRIVATE atlas_cluster atlas_storage_svc gRPC::grpc++)
+add_test(NAME health_tracker_test COMMAND health_tracker_test)
+
+# Phase 2 headline: kill a node, watch the cluster restore the replication factor.
+add_executable(self_healing_test tests/self_healing_test.cpp)
+target_link_libraries(self_healing_test
+  PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME self_healing_test COMMAND self_healing_test)
 
 # End-to-end Milestone-1 test: metadata + storage nodes + the ingestion client, all in-process.
 add_executable(phase1_e2e_test tests/phase1_e2e_test.cpp)

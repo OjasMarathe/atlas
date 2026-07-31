@@ -36,9 +36,10 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 - [ ] merkle-tree — efficient replica divergence detection *(stretch)*
 
 ### Fault tolerance & consensus (Phase 2)
-- [ ] heartbeat-failure-detection — timeouts, phi-accrual (concept)
-- [ ] replica-promotion — leader handoff for a chunk group
-- [ ] self-healing — re-replication to restore the factor
+- [x] [heartbeat-failure-detection](heartbeat-failure-detection.md) — timeouts, thresholds, phi-accrual
+- [x] replica-promotion — *degenerate in Atlas (immutable chunks have no write-owning primary);
+      explained in [self-healing](self-healing.md) and [ADR-0009](../architecture/adr/0009-failure-detection-and-healing.md)*
+- [x] [self-healing](self-healing.md) — re-replication to restore the factor
 - [ ] raft — leader election + replicated log *(stretch)*
 - [ ] quorum-consistency — R/W quorums, why R+W>N
 

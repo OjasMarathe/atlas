@@ -36,8 +36,21 @@ class MetadataStore {
   // All versions of a file, ascending by version number.
   std::vector<FileMetadata> ListVersions(const std::string& file_id) const;
 
+  // ---- chunk location index (Phase 2) ----
+  //
+  // Who currently holds each chunk. Unlike a file *version* — immutable history — locations are
+  // mutable: self-healing adds a holder, a node loss removes one. Keeping them out of the version
+  // blob is what lets GetFile serve *current* placements without rewriting immutable history, and
+  // it dedups naturally, since one content-addressed chunk can be shared by many files/versions.
+  void AddChunkLocation(const std::string& chunk_id, const std::string& node_id);
+  void RemoveChunkLocation(const std::string& chunk_id, const std::string& node_id);
+  std::vector<std::string> ChunkLocations(const std::string& chunk_id) const;
+  std::vector<std::string> AllChunkIds() const;  // every chunk the cluster knows about
+
  private:
   uint64_t LatestVersion(const std::string& file_id) const;  // 0 if none
+  ChunkPlacement LoadLocations(const std::string& chunk_id) const;
+  void FillLiveLocations(FileMetadata* meta) const;  // placements <- location index
 
   std::unique_ptr<rocksdb::DB> db_;
 };

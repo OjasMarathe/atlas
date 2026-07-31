@@ -9,6 +9,30 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-07
 
+- **2026-07-29** — [Phase 2] **Self-healing works — the cluster restores its own replication factor.**
+  Branch `phase-2/fault-tolerance` off the merged `main`. Three slices, 10/10 tests green:
+  - **Failure detection** (`src/cluster/health_tracker`, `src/cluster/prober`) — **pull-based**: the
+    control plane probes each node via the existing `StorageService.Heartbeat`, declaring death only
+    after N *consecutive* misses (one success revives). No proto change. `ProbeOnce()` is
+    synchronous so tests assert exactly when a node is declared dead instead of sleeping.
+  - **Live chunk-location index** (`c/<chunk_id>` in the metadata store) — mutable holder set kept
+    out of the immutable version blobs and written in the same atomic batch; `GetFile` serves it, so
+    readers see healed placements with **zero client change**. Also extracted
+    `src/storage/chunk_transfer` so client + healer share one streaming implementation.
+  - **Healer** (`src/cluster/healer`) — `RepairOnce` finds chunks below R live holders, pulls from a
+    survivor, pushes onto a fresh ring-chosen live node, records it. Idempotent/convergent.
+  - **`self_healing_test`**: upload → kill a holder → 2 missed probes → dead → exactly 1 repair onto
+    a node outside the original three (verified it really serves the bytes) → back to 3 live holders
+    → second pass is a no-op → file still downloads.
+  - Notes: heartbeat-failure-detection, self-healing (+ why **replica promotion is degenerate** in
+    Atlas: immutable chunks have no write-owning primary). **ADR-0009** records the Phase 2 model
+    (0008 left reserved for the search track's query-parsing ADR).
+  - Fixed a now-wrong e2e assertion: re-uploading identical bytes hits the same chunk id, so the
+    location index rightly still lists a dead node as a holder (its bytes are unreachable, not
+    gone) — the partial-write regression test now targets a *fresh* chunk mapped onto the dead node.
+  - **Still open in Phase 2:** node-join chunk migration (the Phase 1 DoD leftover), wiring the
+    probe/heal loop into `atlas_node`, GC of surplus/dead chunks, Raft (stretch). — Ojas
+
 - **2026-07-29** — [Phase 1] **Review fixes (PR #5, Harshal).** Two real defects found and fixed:
   (1) `MetadataStore::RegisterFile` wrote the version blob and the `latest` pointer as two separate
   `Put`s — **not crash-atomic at the system's commit point**; now one `rocksdb::WriteBatch(sync)`.

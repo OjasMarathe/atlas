@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <unordered_set>
 #include <utility>
 
 namespace atlas {
@@ -20,6 +21,10 @@ std::string VerKey(const std::string& file_id, uint64_t version) {
 }
 std::string LatestKey(const std::string& file_id) { return "L/" + file_id; }
 std::string VerPrefix(const std::string& file_id) { return "f/" + file_id + "/"; }
+
+// Chunk location index: chunk_id -> the nodes currently holding it (a serialized ChunkPlacement).
+constexpr const char* kLocPrefix = "c/";
+std::string LocKey(const std::string& chunk_id) { return kLocPrefix + chunk_id; }
 
 void SetNow(google::protobuf::Timestamp* ts) {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -63,10 +68,96 @@ FileMetadata MetadataStore::RegisterFile(FileMetadata meta) {
   rocksdb::WriteBatch batch;
   batch.Put(VerKey(meta.file_id(), next), bytes);
   batch.Put(LatestKey(meta.file_id()), std::to_string(next));
+
+  // Fold this version's holders into the location index, in the same atomic batch. Merged rather
+  // than overwritten: the same content-addressed chunk may already be held for another file or
+  // version, and those holders are still valid.
+  for (const ChunkPlacement& placement : meta.chunks()) {
+    const std::string& chunk_id = placement.chunk().chunk_id();
+    ChunkPlacement merged = LoadLocations(chunk_id);
+    merged.mutable_chunk()->CopyFrom(placement.chunk());
+    std::unordered_set<std::string> present(merged.node_ids().begin(), merged.node_ids().end());
+    for (const std::string& node_id : placement.node_ids()) {
+      if (present.insert(node_id).second) merged.add_node_ids(node_id);
+    }
+    std::string loc_bytes;
+    merged.SerializeToString(&loc_bytes);
+    batch.Put(LocKey(chunk_id), loc_bytes);
+  }
+
   rocksdb::WriteOptions wo;
   wo.sync = true;
   db_->Write(wo, &batch);
   return meta;
+}
+
+ChunkPlacement MetadataStore::LoadLocations(const std::string& chunk_id) const {
+  ChunkPlacement placement;
+  if (!db_) return placement;
+  std::string bytes;
+  if (db_->Get(rocksdb::ReadOptions(), LocKey(chunk_id), &bytes).ok()) {
+    placement.ParseFromString(bytes);
+  }
+  return placement;
+}
+
+void MetadataStore::FillLiveLocations(FileMetadata* meta) const {
+  // A version blob records where the chunks were at write time; the index knows where they are
+  // *now* (after self-healing). Readers must always get the current answer.
+  for (ChunkPlacement& placement : *meta->mutable_chunks()) {
+    const ChunkPlacement live = LoadLocations(placement.chunk().chunk_id());
+    placement.clear_node_ids();
+    for (const std::string& node_id : live.node_ids()) placement.add_node_ids(node_id);
+  }
+}
+
+void MetadataStore::AddChunkLocation(const std::string& chunk_id, const std::string& node_id) {
+  if (!db_) return;
+  ChunkPlacement placement = LoadLocations(chunk_id);
+  for (const std::string& existing : placement.node_ids()) {
+    if (existing == node_id) return;  // already recorded
+  }
+  placement.mutable_chunk()->set_chunk_id(chunk_id);
+  placement.add_node_ids(node_id);
+  std::string bytes;
+  placement.SerializeToString(&bytes);
+  rocksdb::WriteOptions wo;
+  wo.sync = true;
+  db_->Put(wo, LocKey(chunk_id), bytes);
+}
+
+void MetadataStore::RemoveChunkLocation(const std::string& chunk_id, const std::string& node_id) {
+  if (!db_) return;
+  const ChunkPlacement current = LoadLocations(chunk_id);
+  ChunkPlacement updated;
+  updated.mutable_chunk()->CopyFrom(current.chunk());
+  updated.mutable_chunk()->set_chunk_id(chunk_id);
+  for (const std::string& existing : current.node_ids()) {
+    if (existing != node_id) updated.add_node_ids(existing);
+  }
+  std::string bytes;
+  updated.SerializeToString(&bytes);
+  rocksdb::WriteOptions wo;
+  wo.sync = true;
+  db_->Put(wo, LocKey(chunk_id), bytes);
+}
+
+std::vector<std::string> MetadataStore::ChunkLocations(const std::string& chunk_id) const {
+  const ChunkPlacement placement = LoadLocations(chunk_id);
+  return {placement.node_ids().begin(), placement.node_ids().end()};
+}
+
+std::vector<std::string> MetadataStore::AllChunkIds() const {
+  std::vector<std::string> ids;
+  if (!db_) return ids;
+  const std::string prefix = kLocPrefix;
+  std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions()));
+  for (it->Seek(prefix); it->Valid(); it->Next()) {
+    const std::string key = it->key().ToString();
+    if (key.compare(0, prefix.size(), prefix) != 0) break;
+    ids.push_back(key.substr(prefix.size()));
+  }
+  return ids;
 }
 
 bool MetadataStore::GetFile(const std::string& file_id, uint64_t version, FileMetadata* out) const {
@@ -77,7 +168,9 @@ bool MetadataStore::GetFile(const std::string& file_id, uint64_t version, FileMe
   }
   std::string bytes;
   if (!db_->Get(rocksdb::ReadOptions(), VerKey(file_id, version), &bytes).ok()) return false;
-  return out->ParseFromString(bytes);
+  if (!out->ParseFromString(bytes)) return false;
+  FillLiveLocations(out);  // serve where the chunks are now, not where they were written
+  return true;
 }
 
 std::vector<FileMetadata> MetadataStore::ListVersions(const std::string& file_id) const {

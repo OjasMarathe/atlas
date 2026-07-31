@@ -6,6 +6,7 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -13,6 +14,8 @@
 #include <vector>
 
 #include "client/client.h"
+#include "common/hash_ring.h"
+#include "common/sha256.h"
 #include "metadata.grpc.pb.h"
 #include "metadata/metadata_service.h"
 #include "metadata/metadata_store.h"
@@ -226,18 +229,30 @@ int main() {
               dead.c_str());
 
   // --- a write that can't reach all 3 replicas records ONLY the nodes that acked ---
-  // Same bytes as hello.txt -> same chunk id -> the same three ring nodes, one of which is now
-  // dead. W=2 still succeeds, and the placement must show 2 holders — recording the dead node
-  // would make an under-replicated chunk look healthy to Phase 2's healer.
+  // Needs *new* content whose chunk maps onto the dead node: re-uploading existing bytes would
+  // hit the same chunk id, and the location index would rightly still list all three holders
+  // (a dead node's bytes are unreachable, not gone). Recording an un-acked node would make an
+  // under-replicated chunk look permanently healthy to the healer.
   {
-    const UploadResult partial = client.Upload("hello-again.txt", "ojas", content);
-    CHECK(partial.ok);
+    HashRing ring(/*vnodes_per_node=*/64);
+    for (const auto& node : nodes) ring.AddNode(node->node_id);
+
+    std::string payload;
+    for (int i = 0; i < 100 && payload.empty(); ++i) {
+      const std::string candidate = "partial-write-probe-" + std::to_string(i);
+      const std::vector<NodeId> replicas = ring.Replicas(Sha256Hex(candidate), 3);
+      if (std::find(replicas.begin(), replicas.end(), dead) != replicas.end()) payload = candidate;
+    }
+    CHECK(!payload.empty());  // with 4 nodes and R=3, a chunk excludes only one node
+
+    const UploadResult partial = client.Upload("partial.txt", "ojas", payload);
+    CHECK(partial.ok);  // W=2 is still satisfied by the two live replicas
     FileMetadata partial_meta;
-    CHECK(FetchMeta(meta_address, "hello-again.txt", &partial_meta));
+    CHECK(FetchMeta(meta_address, "partial.txt", &partial_meta));
     CHECK_EQ(partial_meta.chunks_size(), 1);
     CHECK_EQ(partial_meta.chunks(0).node_ids_size(), 2);
     for (const std::string& node_id : partial_meta.chunks(0).node_ids()) {
-      CHECK(node_id != dead);  // the dead replica must not be listed as a holder
+      CHECK(node_id != dead);  // the node that never acked must not be listed as a holder
     }
   }
 
