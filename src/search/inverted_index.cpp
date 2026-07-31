@@ -18,7 +18,8 @@ DocId InvertedIndex::IndexDocument(std::string file_id, std::string_view text,
 
   const std::vector<Term> terms = Analyze(text);
   const auto doc_id = static_cast<DocId>(docs_.size());
-  docs_.push_back(DocumentMeta{file_id, static_cast<std::uint32_t>(terms.size()), false, fields});
+  docs_.push_back(DocumentMeta{file_id, static_cast<std::uint32_t>(terms.size()), false, fields,
+                               std::string(text)});
   by_file_id_[std::move(file_id)] = doc_id;
   live_length_ += terms.size();
   ++live_documents_;
@@ -46,6 +47,20 @@ bool InvertedIndex::DeleteDocument(std::string_view file_id) {
   meta.deleted = true;
   live_length_ -= meta.length;
   --live_documents_;
+
+  // Give back this document's contribution to the vocabulary, so autocomplete and spell
+  // correction stop offering words that no live document contains. Re-analyzing the retained
+  // text is what makes this possible without storing per-document surface forms.
+  for (const Term& term : Analyze(meta.text)) {
+    const auto entry = vocabulary_.find(term.surface);
+    if (entry == vocabulary_.end()) continue;
+    if (entry->second <= 1) {
+      vocabulary_.erase(entry);
+    } else {
+      --entry->second;
+    }
+  }
+
   by_file_id_.erase(it);
   return true;
 }
@@ -89,9 +104,8 @@ void InvertedIndex::Compact() {
   for (std::size_t i = 0; i < docs_.size(); ++i) {
     by_file_id_[docs_[i].file_id] = static_cast<DocId>(i);
   }
-  // vocabulary_ deliberately keeps words from compacted-away documents: it drives autocomplete
-  // and spell correction, where an occasional stale suggestion costs far less than tracking
-  // per-document surface forms just to decrement counts here.
+  // vocabulary_ needs no work here: DeleteDocument already gave back each tombstoned document's
+  // contribution, so by the time we compact the counts are already correct.
 }
 
 const PostingList* InvertedIndex::Lookup(std::string_view term) const {
@@ -128,6 +142,20 @@ const std::string& InvertedIndex::FileId(DocId doc_id) const {
   return docs_[doc_id].file_id;
 }
 
+const std::string& InvertedIndex::Text(DocId doc_id) const {
+  if (doc_id >= docs_.size()) throw std::out_of_range("InvertedIndex::Text: bad DocId");
+  return docs_[doc_id].text;
+}
+
+void InvertedIndex::ForEachPostingList(
+    const std::function<void(const std::string&, const PostingList&)>& visit) const {
+  for (const auto& [term, list] : postings_) visit(term, list);
+}
+
+void InvertedIndex::SetPostingList(std::string term, PostingList postings) {
+  postings_[std::move(term)] = std::move(postings);
+}
+
 std::vector<DocId> InvertedIndex::AllDocuments() const {
   std::vector<DocId> ids;
   ids.reserve(live_documents_);
@@ -161,7 +189,7 @@ std::size_t InvertedIndex::UncompressedPostingBytes() const {
   return total;
 }
 
-std::string InvertedIndex::Serialize() const {
+std::string InvertedIndex::SerializeMetadata() const {
   std::string out;
   PutVarint(docs_.size(), &out);
   for (const DocumentMeta& doc : docs_) {
@@ -169,6 +197,8 @@ std::string InvertedIndex::Serialize() const {
     out += doc.file_id;
     PutVarint(doc.length, &out);
     PutVarint(doc.deleted ? 1 : 0, &out);
+    PutVarint(doc.text.size(), &out);
+    out += doc.text;
     PutVarint(doc.fields.size(), &out);
     for (const auto& [key, value] : doc.fields) {
       PutVarint(key.size(), &out);
@@ -178,6 +208,19 @@ std::string InvertedIndex::Serialize() const {
     }
   }
 
+  PutVarint(vocabulary_.size(), &out);
+  for (const auto& [word, count] : vocabulary_) {
+    PutVarint(word.size(), &out);
+    out += word;
+    PutVarint(count, &out);
+  }
+  return out;
+}
+
+std::string InvertedIndex::Serialize() const {
+  // Metadata first, then every posting list — the same two parts index_store.h writes to
+  // separate column families, just concatenated into one buffer.
+  std::string out = SerializeMetadata();
   PutVarint(postings_.size(), &out);
   for (const auto& [term, list] : postings_) {
     PutVarint(term.size(), &out);
@@ -185,13 +228,6 @@ std::string InvertedIndex::Serialize() const {
     const std::string encoded = EncodePostingList(list);
     PutVarint(encoded.size(), &out);
     out += encoded;
-  }
-
-  PutVarint(vocabulary_.size(), &out);
-  for (const auto& [word, count] : vocabulary_) {
-    PutVarint(word.size(), &out);
-    out += word;
-    PutVarint(count, &out);
   }
   return out;
 }
@@ -210,41 +246,86 @@ bool GetString(std::string_view in, std::size_t* offset, std::string* out) {
 
 }  // namespace
 
-bool InvertedIndex::Load(std::string_view bytes) {
-  InvertedIndex loaded;
-  std::size_t offset = 0;
+namespace {
 
+// Parses the metadata section (document table + vocabulary) starting at *offset.
+bool ParseMetadata(std::string_view bytes, std::size_t* offset, InvertedIndex::Snapshot* out) {
   std::uint64_t doc_count = 0;
-  if (!GetVarint(bytes, &offset, &doc_count)) return false;
+  if (!GetVarint(bytes, offset, &doc_count)) return false;
   // Every record costs at least a byte, so a count exceeding the remaining buffer is corruption.
   // Checking up front turns a damaged file into a clean `false` instead of a huge allocation.
-  if (doc_count > bytes.size() - offset) return false;
+  if (doc_count > bytes.size() - *offset) return false;
   for (std::uint64_t i = 0; i < doc_count; ++i) {
-    DocumentMeta meta;
+    InvertedIndex::DocumentRecord record;
     std::uint64_t length = 0;
     std::uint64_t deleted = 0;
     std::uint64_t field_count = 0;
-    if (!GetString(bytes, &offset, &meta.file_id)) return false;
-    if (!GetVarint(bytes, &offset, &length)) return false;
-    if (!GetVarint(bytes, &offset, &deleted)) return false;
-    if (!GetVarint(bytes, &offset, &field_count)) return false;
-    meta.length = static_cast<std::uint32_t>(length);
-    meta.deleted = deleted != 0;
+    if (!GetString(bytes, offset, &record.file_id)) return false;
+    if (!GetVarint(bytes, offset, &length)) return false;
+    if (!GetVarint(bytes, offset, &deleted)) return false;
+    if (!GetString(bytes, offset, &record.text)) return false;
+    if (!GetVarint(bytes, offset, &field_count)) return false;
+    record.length = static_cast<std::uint32_t>(length);
+    record.deleted = deleted != 0;
     for (std::uint64_t f = 0; f < field_count; ++f) {
       std::string key;
       std::string value;
-      if (!GetString(bytes, &offset, &key)) return false;
-      if (!GetString(bytes, &offset, &value)) return false;
-      meta.fields.emplace(std::move(key), std::move(value));
+      if (!GetString(bytes, offset, &key)) return false;
+      if (!GetString(bytes, offset, &value)) return false;
+      record.fields.emplace(std::move(key), std::move(value));
     }
-    if (!meta.deleted) {
-      loaded.by_file_id_[meta.file_id] = static_cast<DocId>(loaded.docs_.size());
-      loaded.live_length_ += meta.length;
-      ++loaded.live_documents_;
-    }
-    loaded.docs_.push_back(std::move(meta));
+    out->documents.push_back(std::move(record));
   }
 
+  std::uint64_t vocabulary_size = 0;
+  if (!GetVarint(bytes, offset, &vocabulary_size)) return false;
+  if (vocabulary_size > bytes.size() - *offset) return false;
+  for (std::uint64_t i = 0; i < vocabulary_size; ++i) {
+    std::string word;
+    std::uint64_t count = 0;
+    if (!GetString(bytes, offset, &word)) return false;
+    if (!GetVarint(bytes, offset, &count)) return false;
+    out->vocabulary.emplace(std::move(word), count);
+  }
+  return true;
+}
+
+}  // namespace
+
+void InvertedIndex::Adopt(Snapshot snapshot) {
+  docs_.clear();
+  by_file_id_.clear();
+  live_length_ = 0;
+  live_documents_ = 0;
+  vocabulary_ = std::move(snapshot.vocabulary);
+
+  for (DocumentRecord& record : snapshot.documents) {
+    DocumentMeta meta{std::move(record.file_id), record.length, record.deleted,
+                      std::move(record.fields), std::move(record.text)};
+    if (!meta.deleted) {
+      by_file_id_[meta.file_id] = static_cast<DocId>(docs_.size());
+      live_length_ += meta.length;
+      ++live_documents_;
+    }
+    docs_.push_back(std::move(meta));
+  }
+}
+
+bool InvertedIndex::LoadMetadata(std::string_view bytes) {
+  Snapshot snapshot;
+  std::size_t offset = 0;
+  if (!ParseMetadata(bytes, &offset, &snapshot)) return false;
+  Adopt(std::move(snapshot));
+  postings_.clear();  // the caller repopulates these via SetPostingList
+  return true;
+}
+
+bool InvertedIndex::Load(std::string_view bytes) {
+  Snapshot snapshot;
+  std::size_t offset = 0;
+  if (!ParseMetadata(bytes, &offset, &snapshot)) return false;
+
+  std::unordered_map<std::string, PostingList, TermHash, std::equal_to<>> postings;
   std::uint64_t term_count = 0;
   if (!GetVarint(bytes, &offset, &term_count)) return false;
   if (term_count > bytes.size() - offset) return false;
@@ -255,21 +336,12 @@ bool InvertedIndex::Load(std::string_view bytes) {
     if (!GetString(bytes, &offset, &encoded)) return false;
     PostingList list;
     if (!DecodePostingList(encoded, &list)) return false;
-    loaded.postings_.emplace(std::move(term), std::move(list));
+    postings.emplace(std::move(term), std::move(list));
   }
 
-  std::uint64_t vocabulary_size = 0;
-  if (!GetVarint(bytes, &offset, &vocabulary_size)) return false;
-  if (vocabulary_size > bytes.size() - offset) return false;
-  for (std::uint64_t i = 0; i < vocabulary_size; ++i) {
-    std::string word;
-    std::uint64_t count = 0;
-    if (!GetString(bytes, &offset, &word)) return false;
-    if (!GetVarint(bytes, &offset, &count)) return false;
-    loaded.vocabulary_.emplace(std::move(word), count);
-  }
-
-  *this = std::move(loaded);  // only commit once the whole buffer parsed cleanly
+  // Only commit once the whole buffer parsed cleanly.
+  Adopt(std::move(snapshot));
+  postings_ = std::move(postings);
   return true;
 }
 

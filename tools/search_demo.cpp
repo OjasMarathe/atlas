@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < hits.size(); ++i) {
       std::cout << "  " << (i + 1) << ". " << std::setw(8) << std::setprecision(3) << hits[i].score
                 << "  " << hits[i].file_id << "\n";
+      if (!hits[i].snippet.empty()) std::cout << "        " << hits[i].snippet << "\n";
     }
   }
 

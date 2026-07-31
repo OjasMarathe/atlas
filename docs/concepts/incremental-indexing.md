@@ -94,12 +94,14 @@ identity of a document is its `file_id` string and `DocId` is an internal detail
   boolean set operation above it already sees live-only ids. Doing it once at the leaves beats
   filtering after each union/intersection.
 - `AllDocuments()` returns live ids only, so `NOT` complements against the living.
-- **Known gap — vocabulary is not decremented.** The autocomplete/spell-correction vocabulary
-  keeps words from deleted documents. That's deliberate: tracking per-document surface forms
-  purely to decrement counters costs more than the occasional stale suggestion. `Compact()`
-  doesn't fix it either; a rebuild does.
-- **No automatic compaction trigger.** Real systems compact when the tombstone ratio crosses a
-  threshold; ours is manual, which is honest for M1 but means a long-running shard grows.
+- **The vocabulary is decremented on delete.** Because the index retains each document's text
+  (for snippets), a delete can re-analyze it and give back that document's contribution, erasing
+  words that reach zero. Autocomplete and spell correction then stop offering words no live
+  document contains. The trie and BK-tree can't remove entries cheaply, so they're marked dirty
+  and rebuilt lazily on the next suggestion rather than on every delete.
+- **Compaction triggers automatically** once tombstones exceed `SearchEngine::kCompactionThreshold`
+  (30%) of the index, so a long-running shard can't grow without bound. It's still available
+  manually via `Compact()`.
 
 ## Complexity & trade-offs
 
@@ -121,7 +123,8 @@ real cost is deferred into a batch job that can run when convenient.
 - **Re-indexing after deleting** works — the file id is simply absent, so the delete is a no-op.
 - **`DocId`s are invalidated by `Compact()`**. Any cached id — including one held across an RPC —
   is dangling afterwards. Only `file_id` is stable.
-- **Stale suggestions** survive deletion (see above).
+- **Suggestions go stale until the next query.** A delete marks the trie/BK-tree dirty rather
+  than rebuilding them immediately, so the repair happens on the next Suggest/DidYouMean call.
 - **Terms with no live documents** still occupy the map until compaction, so `UniqueTerms()`
   overcounts in the meantime.
 - **A tombstone-heavy index degrades quietly**: queries still scan the dead postings, so a shard

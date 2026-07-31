@@ -130,9 +130,10 @@ std::vector<Completion> Trie::Complete(std::string_view prefix, std::size_t limi
 - **Non-ASCII** — nodes key on bytes, so a multibyte UTF-8 character spans several levels. It
   round-trips correctly but a "prefix" can land mid-character, matching the tokenizer's
   documented ASCII-only limitation.
-- **Deleted documents leave their words behind** — see
-  [incremental-indexing](incremental-indexing.md); the vocabulary isn't decremented, so a
-  suggestion can point at a word no live document contains.
+- **Deleted documents' words disappear**, because a delete decrements the vocabulary and the
+  trie is rebuilt lazily on the next suggestion — see
+  [incremental-indexing](incremental-indexing.md). A trie can't cheaply un-insert a word, which
+  is why the repair is a rebuild rather than an in-place edit.
 
 ## Alternatives we considered
 

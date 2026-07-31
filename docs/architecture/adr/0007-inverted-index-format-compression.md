@@ -71,6 +71,22 @@ measured bottleneck — not needed at demo scale.
 - Adds a concept note to write: **posting-list-compression** (delta+varint gap encoding, with
   a worked example).
 
+## Implementation note (2026-08-01) — deviation from the proposed key layout
+
+The persistence layer landed as `src/search/index_store.{h,cpp}` with two column families, as
+decided. One deviation is worth recording: **postings are keyed by the term string, not by an
+integer `term_id` with a separate term dictionary.**
+
+Reasoning: the `term_id` indirection buys space by not repeating term strings, but it costs an
+id allocator, a second lookup on the query path, and a consistency invariant between the two
+families. RocksDB already prefix-compresses keys within a block, which recovers much of the same
+saving for free. At demo-corpus scale the term dictionary is nowhere near dominant, so the
+simpler layout wins. Revisit if the dictionary ever dominates the on-disk footprint.
+
+The document table and vocabulary live in the default column family under one key, and a save is
+a single atomic `WriteBatch` — a partially applied save would leave a document table that
+disagrees with the posting lists, which is worse than an older but coherent snapshot.
+
 ## Open question carried forward
 
 Where query parsing (boolean operators, phrase quotes, filters) happens — coordinator vs.
