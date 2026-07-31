@@ -25,4 +25,8 @@ bool ReplicateChunk(StorageService::Stub* stub, const std::string& chunk_id,
 bool GetChunk(StorageService::Stub* stub, const std::string& chunk_id, std::string* out,
               int timeout_seconds = 2);
 
+// Drops a chunk from a node. Used when rebalancing moves a replica elsewhere — only ever after
+// the new copy is durable.
+bool DeleteChunk(StorageService::Stub* stub, const std::string& chunk_id, int timeout_seconds = 2);
+
 }  // namespace atlas

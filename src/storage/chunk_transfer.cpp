@@ -61,6 +61,15 @@ bool ReplicateChunk(StorageService::Stub* stub, const std::string& chunk_id,
   return writer->Finish().ok() && response.status().code() == Status::OK;
 }
 
+bool DeleteChunk(StorageService::Stub* stub, const std::string& chunk_id, int timeout_seconds) {
+  grpc::ClientContext ctx;
+  SetDeadline(&ctx, timeout_seconds);
+  DeleteChunkRequest request;
+  request.set_chunk_id(chunk_id);
+  Status response;
+  return stub->DeleteChunk(&ctx, request, &response).ok() && response.code() == Status::OK;
+}
+
 bool GetChunk(StorageService::Stub* stub, const std::string& chunk_id, std::string* out,
               int timeout_seconds) {
   grpc::ClientContext ctx;

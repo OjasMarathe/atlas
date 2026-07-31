@@ -15,10 +15,16 @@
 namespace atlas {
 
 struct MaintenanceOptions {
-  std::chrono::milliseconds interval{2000};       // between probe+heal rounds
+  std::chrono::milliseconds interval{2000};       // between rounds
   std::chrono::milliseconds probe_timeout{1000};  // per-node heartbeat deadline
   int failure_threshold = 3;                      // consecutive misses before a node is dead
   int replication_factor = 3;
+  bool rebalance = true;  // also migrate replicas toward the ring's current preference
+};
+
+struct MaintenanceReport {
+  HealReport heal;
+  RebalanceReport rebalance;
 };
 
 // The control plane's background loop: probe every member for liveness, then repair any chunk
@@ -41,9 +47,10 @@ class ClusterMaintenance {
   void Start();
   void Stop();
 
-  // One probe+heal round. Public and synchronous so tests (and a future admin RPC) can drive a
-  // round directly instead of waiting on the timer.
-  HealReport RunOnce();
+  // One round: probe liveness, repair anything under-replicated, then (optionally) migrate
+  // replicas toward the ring's current preference. Public and synchronous so tests (and a future
+  // admin RPC) can drive a round directly instead of waiting on the timer.
+  MaintenanceReport RunOnce();
 
   const HealthTracker& tracker() const { return tracker_; }
 

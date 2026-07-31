@@ -133,9 +133,9 @@ int main() {
 
   // Healthy cluster: a round changes nothing.
   {
-    const HealReport report = maintenance.RunOnce();
-    CHECK_EQ(report.repaired, 0);
-    CHECK_EQ(report.under_replicated, 0);
+    const MaintenanceReport report = maintenance.RunOnce();
+    CHECK_EQ(report.heal.repaired, 0);
+    CHECK_EQ(report.heal.under_replicated, 0);
     CHECK(maintenance.tracker().DeadNodes().empty());
   }
 
@@ -144,10 +144,10 @@ int main() {
     if (node->node_id == victim) node->server->Shutdown();
   }
   {
-    const HealReport report = maintenance.RunOnce();
+    const MaintenanceReport report = maintenance.RunOnce();
     CHECK_EQ(maintenance.tracker().DeadNodes(), (std::vector<std::string>{victim}));
-    CHECK_EQ(report.under_replicated, 1);
-    CHECK_EQ(report.repaired, 1);
+    CHECK_EQ(report.heal.under_replicated, 1);
+    CHECK_EQ(report.heal.repaired, 1);
   }
 
   // The new holder is a node that wasn't in the original placement.
@@ -170,7 +170,7 @@ int main() {
   CHECK(saw_heal);
 
   // Converged: another round finds nothing to do.
-  CHECK_EQ(maintenance.RunOnce().repaired, 0);
+  CHECK_EQ(maintenance.RunOnce().heal.repaired, 0);
 
   // Start()/Stop() must be safe even with no work to do.
   maintenance.Start();

@@ -27,7 +27,7 @@ ClusterMaintenance::ClusterMaintenance(MetadataStore* store, RingSnapshot snapsh
 
 ClusterMaintenance::~ClusterMaintenance() { Stop(); }
 
-HealReport ClusterMaintenance::RunOnce() {
+MaintenanceReport ClusterMaintenance::RunOnce() {
   const RingState ring = snapshot_();
 
   std::vector<ProbeTarget> targets;
@@ -48,13 +48,25 @@ HealReport ClusterMaintenance::RunOnce() {
     last_dead_ = dead;
   }
 
-  const HealReport report = healer_.RepairOnce(ring);
-  if (log_ && (report.repaired > 0 || report.unrepairable > 0)) {
-    log_("healed " + std::to_string(report.repaired) + " replica(s) across " +
-         std::to_string(report.under_replicated) + " under-replicated chunk(s)" +
-         (report.unrepairable > 0
-              ? "; " + std::to_string(report.unrepairable) + " unrepairable (no live copy)"
+  MaintenanceReport report;
+  report.heal = healer_.RepairOnce(ring);
+  if (log_ && (report.heal.repaired > 0 || report.heal.unrepairable > 0)) {
+    log_("healed " + std::to_string(report.heal.repaired) + " replica(s) across " +
+         std::to_string(report.heal.under_replicated) + " under-replicated chunk(s)" +
+         (report.heal.unrepairable > 0
+              ? "; " + std::to_string(report.heal.unrepairable) + " unrepairable (no live copy)"
               : ""));
+  }
+
+  // Repair first, then rebalance: a chunk that is short a copy must be made whole before anyone
+  // worries about whether it is on the *right* nodes.
+  if (options_.rebalance) {
+    report.rebalance = healer_.RebalanceOnce(ring);
+    if (log_ && report.rebalance.migrated > 0) {
+      log_("migrated " + std::to_string(report.rebalance.migrated) + " replica(s) to their ring " +
+           "position across " + std::to_string(report.rebalance.misplaced) + " chunk(s); evicted " +
+           std::to_string(report.rebalance.evicted) + " stale copy(ies)");
+    }
   }
   return report;
 }

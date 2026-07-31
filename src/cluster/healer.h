@@ -19,6 +19,14 @@ struct HealReport {
   int unrepairable = 0;      // no live holder could serve the bytes
 };
 
+struct RebalanceReport {
+  int chunks_scanned = 0;
+  int misplaced = 0;         // chunks the ring now wants somewhere they aren't
+  int migrated = 0;          // replicas copied to their new rightful node
+  int evicted = 0;           // stale replicas dropped after the copy landed
+  int skipped_degraded = 0;  // left alone because durability comes first
+};
+
 // Self-healing re-replication (Phase 2).
 //
 // Restores the replication factor after a node dies: for every chunk whose live holders have
@@ -37,6 +45,16 @@ class Healer {
   // Synchronous by design: a background loop can call it on a timer, and tests can call it
   // directly instead of sleeping and hoping.
   HealReport RepairOnce(const RingState& ring_state);
+
+  // Move replicas toward where the ring now says they belong — the other half of placement
+  // maintenance. When a node joins, the chunks whose preference list now includes it are still
+  // fully replicated, so RepairOnce (which only reacts to *missing* copies) correctly ignores
+  // them and they would sit on the old nodes forever, leaving the new node empty.
+  //
+  // Always copy-then-evict, never the reverse: a chunk must never dip below the replication
+  // factor to satisfy a placement preference. Chunks that are already degraded are skipped
+  // entirely — durability outranks tidiness, and RepairOnce will deal with them first.
+  RebalanceReport RebalanceOnce(const RingState& ring_state);
 
  private:
   StorageService::Stub* StubFor(const std::string& address);

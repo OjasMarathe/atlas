@@ -132,6 +132,12 @@ add_executable(health_tracker_test tests/health_tracker_test.cpp)
 target_link_libraries(health_tracker_test PRIVATE atlas_cluster atlas_storage_svc gRPC::grpc++)
 add_test(NAME health_tracker_test COMMAND health_tracker_test)
 
+# Node-join migration: adding a node moves only its share (the Phase 1 DoD's last clause).
+add_executable(rebalance_test tests/rebalance_test.cpp)
+target_link_libraries(rebalance_test
+  PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME rebalance_test COMMAND rebalance_test)
+
 add_executable(maintenance_test tests/maintenance_test.cpp)
 target_link_libraries(maintenance_test
   PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)

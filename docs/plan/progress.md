@@ -9,6 +9,26 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-08
 
+- **2026-08-01** — [Phase 2] **Node-join migration — Phases 1 and 2 are now DoD-complete.** 12/12
+  tests green.
+  - **`Healer::RebalanceOnce`** — the other half of placement maintenance. Repair reacts to
+    *missing* copies; a node join creates none (every chunk still has R live holders), so the
+    newcomer would stay empty forever. Rebalance reacts to *misplacement*: the ring wants this
+    chunk somewhere it isn't. Runs after repair in the maintenance loop, so durability always
+    precedes tidiness.
+  - **Safety rules, deliberately:** copy-then-evict (never open a durability hole for a placement
+    preference), skip already-degraded chunks entirely, and evict only holders outside the ideal
+    set so the count lands back at exactly R.
+  - **`rebalance_test` proves the roadmap's Phase-1 DoD clause** — "adding a node migrates only its
+    share" — at the *data* level, not just the ring level: 5→6 nodes, 40 chunks,
+    **`21/120 replicas moved (17.5%)`** vs the ideal 1/6 ≈ 16.7%. Every move landed on the newcomer
+    (zero churn between existing nodes), every chunk kept exactly 3 holders throughout, and the file
+    downloaded byte-identical afterwards. `hash % N` placement would have moved nearly all 120.
+  - `RunOnce()` now returns `MaintenanceReport{heal, rebalance}`; added `DeleteChunk` to
+    `chunk_transfer`. Concept note: **chunk-migration**.
+  - **Remaining (optional):** GC of surplus chunks, repair/migration rate limiting, Raft (stretch).
+    — Ojas
+
 - **2026-08-01** — [Phase 2] **Atlas is now a runnable, self-healing cluster** (not just a test
   harness). 11/11 tests green.
   - **Node roles** — `ATLAS_ROLE=storage|metadata` in one binary. Storage nodes **self-register**

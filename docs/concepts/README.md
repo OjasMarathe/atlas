@@ -40,6 +40,7 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 - [x] replica-promotion — *degenerate in Atlas (immutable chunks have no write-owning primary);
       explained in [self-healing](self-healing.md) and [ADR-0009](../architecture/adr/0009-failure-detection-and-healing.md)*
 - [x] [self-healing](self-healing.md) — re-replication to restore the factor
+- [x] [chunk-migration](chunk-migration.md) — rebalancing when a node joins (only ~1/N moves)
 - [ ] raft — leader election + replicated log *(stretch)*
 - [ ] quorum-consistency — R/W quorums, why R+W>N
 
