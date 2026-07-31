@@ -150,6 +150,17 @@ std::vector<DocId> InvertedIndex::DocumentsWithField(std::string_view field,
   return ids;
 }
 
+std::size_t InvertedIndex::UncompressedPostingBytes() const {
+  std::size_t total = 0;
+  for (const auto& [term, list] : postings_) {
+    (void)term;
+    for (const Posting& posting : list) {
+      total += 3 * sizeof(std::uint32_t) + posting.positions.size() * sizeof(std::uint32_t);
+    }
+  }
+  return total;
+}
+
 std::string InvertedIndex::Serialize() const {
   std::string out;
   PutVarint(docs_.size(), &out);

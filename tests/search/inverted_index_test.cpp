@@ -60,7 +60,7 @@ TEST(InvertedIndex, TracksDocumentFrequencyAndLengths) {
   InvertedIndex index;
   index.IndexDocument("a.md", "chunk replication");        // 2 terms
   index.IndexDocument("b.md", "chunk chunk chunk chunk");  // 4 terms, one unique
-  EXPECT_EQ(index.DocumentFrequency("chunk"), 2U);       // appears in both documents
+  EXPECT_EQ(index.DocumentFrequency("chunk"), 2U);         // appears in both documents
   EXPECT_EQ(index.DocumentFrequency("replic"), 1U);
   EXPECT_EQ(index.DocumentLength(0), 2U);
   EXPECT_EQ(index.DocumentLength(1), 4U);

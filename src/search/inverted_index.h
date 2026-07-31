@@ -84,6 +84,11 @@ class InvertedIndex {
   std::string Serialize() const;
   bool Load(std::string_view bytes);
 
+  // What the posting lists would cost with fixed-width 32-bit fields (doc id, term frequency,
+  // position count, and each position) — the baseline the delta+varint encoding is measured
+  // against.
+  std::size_t UncompressedPostingBytes() const;
+
  private:
   struct DocumentMeta {
     std::string file_id;

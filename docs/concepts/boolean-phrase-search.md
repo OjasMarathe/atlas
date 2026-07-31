@@ -1,6 +1,6 @@
 # Boolean Search (AND / OR / NOT), Skip Pointers, and Phrase Matching
 
-**Area:** Search engine  ·  **Phase:** 3  ·  **Status:** drafted — boolean implemented, phrase matching designed but not yet built (3b)
+**Area:** Search engine  ·  **Phase:** 3  ·  **Status:** drafted — boolean (3a) and phrase matching (3b) both implemented
 
 ## TL;DR
 
@@ -70,18 +70,34 @@ balances the cost of storing and consulting checkpoints against the distance eac
 Crucially, **skip pointers change the cost, never the answer** — which is exactly how they
 should be tested.
 
-### Phrase matching (designed, not yet implemented — Phase 3b)
+### Phrase matching
 
 `"consistent hashing"` as a phrase means the two terms are *adjacent*, not merely both present.
 The algorithm reuses everything above, one level down:
 
-1. Intersect the posting lists of `consist` and `hash` → documents containing both.
-2. For each surviving document, merge the two **position** lists looking for
-   `position(hash) == position(consist) + 1`.
+1. Intersect the posting lists of `consist` and `hash` → documents containing both. This is the
+   cheap filter; only survivors pay for position checks.
+2. For each survivor, look for an **anchor** position `p` such that every term of the phrase
+   occurs at `p + its offset within the phrase`. Positions are sorted, so each check is a binary
+   search.
+
+```
+document : chunks(0) are(1) replicated(2) across(3) the(4) ring(5)
+indexed  : chunk@0                repl@2                    ring@5     (stop words dropped)
+
+phrase "chunks are replicated"  ->  offsets chunk:0, (are dropped):1, repl:2
+anchor p = 0  ->  chunk@0 ✓   repl@0+2 = 2 ✓   →  match
+```
 
 This is why [the analysis pipeline](tokenization-stemming.md) records positions from the
 *pre-filter* token stream: a dropped stop word must still occupy its slot, or `"chunk ring"`
 would falsely match "chunk **of the** ring".
+
+**The flip side, and it's worth knowing:** stop words aren't in the index at all, so a phrase can
+only verify *how wide* a gap is, not which words filled it. `"chunks of the ring"` therefore also
+matches "chunks **on a** ring" — both are `chunk`, two dropped slots, `ring`. Stop words inside a
+phrase behave as positional wildcards. Lucene does the same when a stop filter is in play; the
+fix is to index stop words rather than drop them, trading index size for phrase precision.
 
 ## Our implementation in Atlas
 
@@ -159,8 +175,13 @@ std::vector<DocId> Intersect(const std::vector<DocId>& a, const std::vector<DocI
   returns nothing; `(chunk AND` is a parse error and reports one.
 - **Duplicate ids would break everything.** Every operation assumes sorted, duplicate-free
   lists. The index guarantees this by appending one posting per (term, document).
-- **Phrase search is not implemented.** Quoted phrases are not yet parsed; positions are stored
-  and ready for it in Phase 3b.
+- **Stop words inside a phrase are positional wildcards** (see above) — `"chunks of the ring"`
+  also matches "chunks on a ring".
+- **An unterminated quote** runs to the end of the query rather than failing: a search box should
+  tolerate a half-typed phrase.
+- **Filters (`field:value`) select but never rank.** A filter-only query has no scorable term, so
+  it returns its matching documents unranked (score 0) rather than nothing — unlike a bare `NOT`,
+  which selects nothing meaningful and returns empty.
 
 ## Alternatives we considered
 

@@ -17,8 +17,8 @@ std::vector<std::string> Words(const std::vector<Suggestion>& suggestions) {
 }
 
 const std::vector<std::string>& Vocabulary() {
-  static const std::vector<std::string> kWords{"chunk",  "chunks", "check",   "replication",
-                                               "replica", "ring",  "hashing", "storage"};
+  static const std::vector<std::string> kWords{"chunk",   "chunks", "check",   "replication",
+                                               "replica", "ring",   "hashing", "storage"};
   return kWords;
 }
 

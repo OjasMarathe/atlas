@@ -316,4 +316,23 @@ std::vector<std::string> PositiveTerms(const Node* root) {
   return terms;
 }
 
+bool HasPositiveFilter(const Node* root) {
+  if (root == nullptr) return false;
+  switch (root->kind) {
+    case Node::Kind::Field:
+      return true;
+    case Node::Kind::Term:
+    case Node::Kind::Not:  // a filter under NOT excludes, it doesn't select
+      return false;
+    case Node::Kind::And:
+    case Node::Kind::Or:
+    case Node::Kind::Phrase:
+      for (const auto& child : root->children) {
+        if (HasPositiveFilter(child.get())) return true;
+      }
+      return false;
+  }
+  return false;
+}
+
 }  // namespace atlas::query

@@ -110,7 +110,8 @@ std::vector<DocId> SearchEngine::EvaluatePhrase(const query::Node* node) const {
           break;
         }
         const std::uint32_t expected = anchor + node->children[i]->phrase_offset;
-        aligned = std::binary_search(posting->positions.begin(), posting->positions.end(), expected);
+        aligned =
+            std::binary_search(posting->positions.begin(), posting->positions.end(), expected);
       }
       if (aligned) {
         matches.push_back(doc_id);
@@ -180,6 +181,20 @@ std::vector<SearchHit> SearchEngine::Search(std::string_view query, std::size_t 
   if (candidates.empty()) return {};
 
   const std::vector<std::string> terms = query::PositiveTerms(parsed.root.get());
+  if (terms.empty()) {
+    // Nothing to rank on. If the query nonetheless *selected* documents by filter
+    // ("author:ojas"), that's a legitimate request for a set — return it in document order with
+    // no score. A bare NOT selects nothing meaningful, so it still returns nothing.
+    if (!query::HasPositiveFilter(parsed.root.get())) return {};
+    std::vector<SearchHit> filtered;
+    filtered.reserve(std::min(top_k, candidates.size()));
+    for (const DocId doc_id : candidates) {
+      if (filtered.size() >= top_k) break;
+      filtered.push_back(SearchHit{index_.FileId(doc_id), 0.0});
+    }
+    return filtered;
+  }
+
   const Ranker ranker(index_);
   const std::vector<ScoredDocument> ranked = ranker.TopK(terms, candidates, top_k);
 

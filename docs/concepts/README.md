@@ -45,12 +45,12 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 ### Search engine (Phase 3)
 - [x] [tokenization-stemming](tokenization-stemming.md) — text → normalized terms (+ stop-words)
 - [x] [inverted-index](inverted-index.md) — term → posting list; the core data structure
-- [ ] posting-list-compression — delta + varint/gap encoding
+- [x] [posting-list-compression](posting-list-compression.md) — delta + varint/gap encoding
 - [x] [bm25](bm25.md) — the ranking function
-- [ ] incremental-indexing — updating the index without full rebuilds
-- [ ] trie-autocomplete — prefix completion
-- [ ] bk-tree-levenshtein — fuzzy/spell-correct via edit distance
-- [x] [boolean-phrase-search](boolean-phrase-search.md) — AND/OR/NOT + skip pointers *(phrase matching designed, built in 3b)*
+- [x] [incremental-indexing](incremental-indexing.md) — updating the index without full rebuilds
+- [x] [trie-autocomplete](trie-autocomplete.md) — prefix completion
+- [x] [bk-tree-levenshtein](bk-tree-levenshtein.md) — fuzzy/spell-correct via edit distance
+- [x] [boolean-phrase-search](boolean-phrase-search.md) — AND/OR/NOT + skip pointers + positional phrase matching
 
 ### Distributed query engine (Phase 4)
 - [ ] index-sharding — document- vs term-partitioning (ADR-0006)

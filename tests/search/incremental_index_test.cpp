@@ -39,8 +39,8 @@ TEST(IncrementalIndex, DeletingAnUnknownFileIsNotAnError) {
 
 TEST(IncrementalIndex, StatisticsFollowLiveDocumentsOnly) {
   InvertedIndex index;
-  index.IndexDocument("short.md", "chunk");                    // 1 term
-  index.IndexDocument("long.md", "chunk chunk chunk chunk");   // 4 terms
+  index.IndexDocument("short.md", "chunk");                   // 1 term
+  index.IndexDocument("long.md", "chunk chunk chunk chunk");  // 4 terms
   ASSERT_DOUBLE_EQ(index.AverageDocumentLength(), 2.5);
 
   index.DeleteDocument("long.md");

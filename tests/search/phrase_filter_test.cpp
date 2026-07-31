@@ -48,9 +48,19 @@ TEST(PhraseSearch, RejectsTheSameWordsInTheWrongOrder) {
 // Without that, "chunks ring" would wrongly match "chunks of the ring".
 TEST(PhraseSearch, DroppedStopWordsStillOccupyTheirSlot) {
   const SearchEngine engine = BuildEngine();
-  EXPECT_TRUE(engine.Search("\"chunks ring\"", 5).empty());
-  EXPECT_EQ(FileIds(engine.Search("\"chunks of the ring\"", 5)),
-            (std::vector<std::string>{"gap.md"}));
+  EXPECT_TRUE(engine.Search("\"chunks ring\"", 5).empty())
+      << "the two words are three slots apart, not adjacent";
+}
+
+// Consequence of the same design: stop words are absent from the index, so a phrase can only
+// check *how wide* the gap is, not which words filled it. "chunks of the ring" therefore also
+// matches "chunks on a ring" — both are chunks + two dropped words + ring. Lucene behaves the
+// same way with a stop filter; documented in concepts/boolean-phrase-search.md.
+TEST(PhraseSearch, StopWordsInAPhraseActAsPositionalWildcards) {
+  const SearchEngine engine = BuildEngine();
+  std::vector<std::string> ids = FileIds(engine.Search("\"chunks of the ring\"", 5));
+  std::sort(ids.begin(), ids.end());
+  EXPECT_EQ(ids, (std::vector<std::string>{"gap.md", "hashing.md"}));
 }
 
 TEST(PhraseSearch, DiffersFromPlainConjunction) {

@@ -11,9 +11,9 @@
 namespace atlas::search {
 
 TEST(Varint, RoundTripsBoundaryValues) {
-  for (const std::uint64_t value : {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{127},
-                                    std::uint64_t{128}, std::uint64_t{16383}, std::uint64_t{16384},
-                                    std::uint64_t{0xFFFFFFFF}, ~std::uint64_t{0}}) {
+  for (const std::uint64_t value :
+       {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{127}, std::uint64_t{128},
+        std::uint64_t{16383}, std::uint64_t{16384}, std::uint64_t{0xFFFFFFFF}, ~std::uint64_t{0}}) {
     std::string encoded;
     PutVarint(value, &encoded);
     std::size_t offset = 0;
@@ -76,25 +76,38 @@ TEST(PostingCodec, RejectsTruncatedInput) {
   EXPECT_FALSE(DecodePostingList(encoded, &decoded));
 }
 
-// Delta encoding turns a dense ascending run into a run of 1s, each costing a single byte —
-// so a long posting list should compress far below 4 bytes per doc id.
+namespace {
+
+// What the same postings would cost with fixed-width fields: doc_id, term frequency and the
+// position count, four bytes each. The fair baseline to judge the codec against.
+std::size_t UncompressedSize(const PostingList& postings) {
+  std::size_t total = 0;
+  for (const Posting& posting : postings) {
+    total += 3 * sizeof(std::uint32_t) + posting.positions.size() * sizeof(std::uint32_t);
+  }
+  return total;
+}
+
+}  // namespace
+
+// Delta encoding turns a dense ascending run into a run of 1s, each costing a single byte.
 TEST(PostingCodec, DeltaEncodingShrinksDenseRuns) {
   PostingList dense;
   for (DocId id = 0; id < 1000; ++id) dense.push_back(Posting{id, 1, {}});
   const std::string encoded = EncodePostingList(dense);
-
-  const std::size_t uncompressed = dense.size() * sizeof(DocId);
-  EXPECT_LT(encoded.size(), uncompressed / 2) << "encoded " << encoded.size() << " vs raw ids "
-                                              << uncompressed;
+  EXPECT_LT(encoded.size(), UncompressedSize(dense) / 2)
+      << "encoded " << encoded.size() << " vs fixed-width " << UncompressedSize(dense);
 }
 
-// Large but tightly-spaced ids are the case delta encoding is really for: the ids need 4 bytes
-// each, the gaps need one.
+// Large but tightly-spaced ids are the case delta encoding is really for: the ids themselves
+// need four bytes each, the gaps between them need one.
 TEST(PostingCodec, LargeIdsWithSmallGapsStayCheap) {
   PostingList sparse;
   for (DocId id = 1'000'000; id < 1'000'500; ++id) sparse.push_back(Posting{id, 1, {}});
   const std::string encoded = EncodePostingList(sparse);
-  EXPECT_LT(encoded.size(), sparse.size() * sizeof(DocId) / 2);
+  EXPECT_LT(encoded.size(), UncompressedSize(sparse) / 2);
+  // Each doc id would need 4 bytes raw; the gap of 1 needs one byte.
+  EXPECT_LT(encoded.size(), sparse.size() * 4);
 }
 
 TEST(InvertedIndexSerialization, RoundTripsAnIndex) {

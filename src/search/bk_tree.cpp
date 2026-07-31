@@ -70,8 +70,8 @@ std::vector<Suggestion> BkTree::Search(std::string_view word, std::size_t max_di
     // contain a match, so they are skipped entirely — that pruning is the whole point.
     const std::size_t low = distance > max_distance ? distance - max_distance : 0;
     const std::size_t high = distance + max_distance;
-    for (auto it = node->children.lower_bound(low);
-         it != node->children.end() && it->first <= high; ++it) {
+    for (auto it = node->children.lower_bound(low); it != node->children.end() && it->first <= high;
+         ++it) {
       stack.push_back(it->second.get());
     }
   }

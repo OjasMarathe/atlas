@@ -85,5 +85,48 @@ int main(int argc, char** argv) {
                 << "  " << hits[i].file_id << "\n";
     }
   }
+
+  // ---- Phase 3b features ----
+  std::cout << "\n--- autocomplete ---\n";
+  for (const std::string& prefix : {"repl", "consist", "chun"}) {
+    std::cout << "  \"" << prefix << "\" -> ";
+    const std::vector<atlas::search::Completion> completions = engine.Suggest(prefix, 4);
+    for (std::size_t i = 0; i < completions.size(); ++i) {
+      std::cout << (i > 0 ? ", " : "") << completions[i].word << " (" << completions[i].frequency
+                << ")";
+    }
+    std::cout << (completions.empty() ? "(none)" : "") << "\n";
+  }
+
+  std::cout << "\n--- spell correction ---\n";
+  for (const std::string& typo : {"hashign", "replicaton", "chunck"}) {
+    const std::vector<atlas::search::Suggestion> suggestions = engine.DidYouMean(typo);
+    std::cout << "  \"" << typo << "\" -> "
+              << (suggestions.empty() ? "(no suggestion)"
+                                      : suggestions.front().word + " (distance " +
+                                            std::to_string(suggestions.front().distance) + ")")
+              << "\n";
+  }
+
+  // Delta+varint vs. the fixed-width layout the same postings would otherwise need (ADR-0007).
+  std::cout << "\n--- posting-list compression ---\n";
+  const auto encode_start = Clock::now();
+  const std::string encoded = engine.index().Serialize();
+  const double encode_ms = MillisecondsSince(encode_start);
+  const std::size_t fixed_width = engine.index().UncompressedPostingBytes();
+
+  atlas::search::InvertedIndex reloaded;
+  const bool round_trips = reloaded.Load(encoded) &&
+                           reloaded.DocumentCount() == stats.document_count &&
+                           reloaded.UniqueTerms() == stats.unique_terms;
+
+  std::cout << "  postings, fixed-width 32-bit : " << std::setprecision(1)
+            << static_cast<double>(fixed_width) / 1024.0 << " KiB\n"
+            << "  whole index, delta + varint  : " << static_cast<double>(encoded.size()) / 1024.0
+            << " KiB (includes doc table + vocabulary)\n"
+            << "  ratio vs postings baseline   : " << std::setprecision(2)
+            << static_cast<double>(fixed_width) / static_cast<double>(encoded.size()) << "x\n"
+            << "  serialized in                : " << std::setprecision(1) << encode_ms << " ms\n"
+            << "  round-trips cleanly          : " << (round_trips ? "yes" : "NO") << "\n";
   return 0;
 }

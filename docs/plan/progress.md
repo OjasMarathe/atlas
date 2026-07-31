@@ -9,6 +9,35 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-07
 
+- **2026-07-31** — [Phase 3] **3b complete.** Phrase search, filters, incremental indexing,
+  autocomplete, spell correction, and posting-list compression. **138 tests** green (from 76),
+  also green under `-DATLAS_SANITIZE=undefined`.
+  - **Incremental indexing** (`inverted_index.*`) — re-indexing a `file_id` now supersedes
+    instead of silently duplicating (the Phase 3a gap). Deletes **tombstone**; `Compact()`
+    reclaims and renumbers. BM25 statistics (`N`, `avgdl`, `n(t)`) count live documents only, or
+    every score skews. → note `incremental-indexing`.
+  - **Phrase search** — `"write ahead log"` matches only adjacent terms, via an anchor position
+    aligning every term at `p + its phrase offset`. Vindicates the Phase 3a decision to record
+    positions pre-filter. **Subtlety found:** stop words aren't indexed, so a phrase can only
+    check gap *width*, not contents — `"chunks of the ring"` also matches "chunks on a ring".
+    Lucene behaves identically; documented rather than hidden.
+  - **Field filters** — `author:ojas AND type:note`. Filters select but never rank
+    (`PositiveTerms` skips them), so a filter-only query returns its set unranked. A bare `NOT`
+    still returns nothing — `HasPositiveFilter` distinguishes "selects a set" from "excludes".
+  - **Trie autocomplete** (`trie.*`) + the `Suggest` RPC, previously UNIMPLEMENTED. Ranked by
+    corpus frequency. Fed **surface forms**, so it offers "replication", not the stem "replic" —
+    `Analyze()` now carries both. → note `trie-autocomplete`.
+  - **BK-tree + Levenshtein** (`bk_tree.*`) — `hashign`→`hashing`, `replicaton`→`replication`.
+    Pruning is property-tested against an exhaustive scan, since it must not change the answer.
+    → note `bk-tree-levenshtein`.
+  - **Posting-list compression** (`posting_codec.*`) — delta + varint per ADR-0007, plus whole
+    index `Serialize()`/`Load()`. Measured on `docs/`: 107.5 KiB of postings → 70.9 KiB whole
+    snapshot (**1.52×**) in ~1 ms. → note `posting-list-compression`.
+  - **Known gaps:** compaction is manual (no tombstone-ratio trigger); the vocabulary isn't
+    decremented on delete, so a stale suggestion is possible; `ScoredDoc.snippet` is still empty
+    (needs byte offsets from the tokenizer); the index is still in memory — RocksDB persistence
+    is the remaining half of ADR-0007. — Harshal
+
 - **2026-07-27** — [Phase 3] **3a complete — DoD met.** Inverted index, BM25 ranking, boolean
   queries, and the shared query parser are built, tested, and wired to the `SearchService` RPC.
   - **`src/search/inverted_index.*`** — `term -> [(doc_id, tf, positions)]`, kept sorted by
@@ -102,10 +131,12 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 - [x] **Phase 3a** — boolean AND/OR/NOT + skip pointers + `boolean-phrase-search` note.
 - [x] **Phase 3a** — seed corpus loader + `atlas_search_demo` DoD check (sub-second ranked query).
 - [x] **Phase 3** — shared query-parser module (`atlas_query`; shard now, coordinator in Phase 4).
-- [ ] **Phase 3b** — phrase search (positions already stored), filters, incremental indexing.
-- [ ] **Phase 3b** — posting-list compression (delta+varint) + RocksDB persistence → ADR-0007.
-- [ ] **Phase 3b** — Trie autocomplete (`Suggest` RPC) + BK-tree/Levenshtein spell correction.
+- [x] **Phase 3b** — phrase search (positional), field filters, incremental indexing + Compact().
+- [x] **Phase 3b** — posting-list compression (delta+varint) + index Serialize/Load → ADR-0007.
+- [x] **Phase 3b** — Trie autocomplete (`Suggest` RPC) + BK-tree/Levenshtein spell correction.
+- [ ] **Phase 3b** — RocksDB persistence for the index (the other half of ADR-0007).
 - [ ] **Phase 3b** — snippets in `ScoredDoc` (needs byte offsets from the tokenizer).
+- [ ] **Phase 3b** — automatic compaction trigger; decrement vocabulary on delete.
 
 ## Resolved decisions
 

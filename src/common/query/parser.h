@@ -72,4 +72,10 @@ Result Parse(std::string_view query, Options options = {});
 // order preserved.
 std::vector<std::string> PositiveTerms(const Node* root);
 
+// True when the query positively *selects* documents by something other than relevance — a
+// Field filter outside a NOT. It distinguishes two queries that both have nothing to rank on:
+// "author:ojas" is a meaningful request for a document set, whereas a bare "NOT x" is an
+// unranked dump of almost the whole shard and is nearly always a mistake.
+bool HasPositiveFilter(const Node* root);
+
 }  // namespace atlas::query
