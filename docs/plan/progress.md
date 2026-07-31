@@ -7,6 +7,29 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ---
 
+## 2026-08
+
+- **2026-08-01** — [Phase 2] **Atlas is now a runnable, self-healing cluster** (not just a test
+  harness). 11/11 tests green.
+  - **Node roles** — `ATLAS_ROLE=storage|metadata` in one binary. Storage nodes **self-register**
+    into the ring at startup (retrying, since the control plane may still be coming up), advertising
+    `ATLAS_ADVERTISE` because `0.0.0.0` isn't routable from a peer.
+  - **Maintenance loop** (`src/cluster/maintenance`) — the metadata node now probes + heals on a
+    timer by itself; `RunOnce()` stays synchronous so tests drive a round directly. Logs liveness
+    *transitions* only, so a steady dead node isn't reprinted every round. Needed
+    `MetadataServiceImpl::SnapshotRing()` for a consistent membership view off the RPC threads.
+  - **`atlas` CLI** — `put` / `get` / `info` / `nodes`. `info` prints each chunk's holders, which is
+    what makes healing visible from the outside.
+  - **`docker-compose.yml`** rewritten: 1 metadata + 4 storage, auto-registering. Closes the
+    "runnable demo" gap Harshal raised in the PR #5 review.
+  - **`scripts/demo-self-healing.sh`** — real 5-process demo: upload → `kill -9` a holder →
+    `[metadata] nodes down: node2` → `healed 1 replica(s)` → placement shows a fresh holder →
+    download verified byte-identical. **Ran it; it works.**
+  - **`maintenance_test`** covers the loop in CI (the demo script isn't run there): one round with
+    `failure_threshold=1` both detects the death and restores the factor, and converges after.
+  - **Still open:** node-join chunk migration (Phase 1 DoD leftover), GC of surplus chunks, Raft
+    (stretch). — Ojas
+
 ## 2026-07
 
 - **2026-07-29** — [Phase 2] **Self-healing works — the cluster restores its own replication factor.**

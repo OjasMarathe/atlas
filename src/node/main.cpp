@@ -1,13 +1,20 @@
-// Atlas Phase 0 node skeleton.
+// Atlas node — runs as either a storage node or the metadata (control-plane) node.
 //
-// Proves the full toolchain end to end: proto codegen (common + storage), a gRPC server
-// implementing StorageService.Heartbeat, a gRPC client pinging peers, and multi-node wiring
-// under docker-compose. This is the embryo of the Phase 2 heartbeat/failure-detection loop.
+//   ATLAS_ROLE=storage  (default)
+//     Serves StorageService over a local RocksDB chunk store. If ATLAS_METADATA is set, it
+//     registers itself into the ring at startup (retrying until the control plane is up).
+//
+//   ATLAS_ROLE=metadata
+//     Serves MetadataService (file map + ring) and runs the maintenance loop: probe every member
+//     for liveness, then re-replicate any chunk that has fallen below the replication factor.
 //
 // Config via env:
-//   ATLAS_NODE_ID   node's id                 (default "node-0")
-//   ATLAS_LISTEN    listen address host:port  (default "0.0.0.0:50051")
-//   ATLAS_PEERS     comma-separated peers      (default "" -> no peers)
+//   ATLAS_NODE_ID    node's id                  (default "node-0")
+//   ATLAS_LISTEN     bind address host:port     (default "0.0.0.0:50051")
+//   ATLAS_ADVERTISE  address peers should dial  (default: ATLAS_LISTEN)
+//   ATLAS_DATA_DIR   on-disk state path         (default "atlas-data-<node id>")
+//   ATLAS_METADATA   metadata address           (storage role: register here; "" -> don't)
+//   ATLAS_HEAL_INTERVAL_MS / ATLAS_FAILURE_THRESHOLD  (metadata role: loop tuning)
 
 #include <atomic>
 #include <chrono>
@@ -17,15 +24,15 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
-#include "common.pb.h"
-#include "storage.grpc.pb.h"
+#include "cluster/maintenance.h"
+#include "metadata.grpc.pb.h"
+#include "metadata/metadata_service.h"
+#include "metadata/metadata_store.h"
 #include "storage/chunk_store.h"
 #include "storage/storage_service.h"
 
@@ -38,12 +45,13 @@ std::atomic<bool> g_stop{false};
 void OnSignal(int /*sig*/) { g_stop.store(true); }
 
 std::mutex g_log_mutex;
+std::string g_id = "node";
 
-void Log(const std::string& node, const std::string& msg) {
-  // Serialize writes: Log() runs on both the RPC and heartbeat threads, and a bare
+void Log(const std::string& msg) {
+  // Serialize writes: Log() runs on the RPC, maintenance and registration threads, and a bare
   // `std::cout <<` chain from multiple threads can interleave mid-line.
-  std::lock_guard<std::mutex> lock(g_log_mutex);
-  std::cout << "[" << node << "] " << msg << std::endl;
+  const std::lock_guard<std::mutex> lock(g_log_mutex);
+  std::cout << "[" << g_id << "] " << msg << std::endl;
 }
 
 std::string EnvOr(const char* key, const std::string& fallback) {
@@ -51,26 +59,51 @@ std::string EnvOr(const char* key, const std::string& fallback) {
   return (v != nullptr && *v != '\0') ? std::string(v) : fallback;
 }
 
-std::vector<std::string> Split(const std::string& s, char delim) {
-  std::vector<std::string> out;
-  std::stringstream ss(s);
-  std::string tok;
-  while (std::getline(ss, tok, delim)) {
-    if (!tok.empty()) out.push_back(tok);
-  }
-  return out;
+int EnvInt(const char* key, int fallback) {
+  const std::string v = EnvOr(key, "");
+  return v.empty() ? fallback : std::atoi(v.c_str());
 }
 
-}  // namespace
+// Blocks until the server is told to shut down, then returns. Shutdown happens on a normal
+// thread because grpc::Server::Shutdown() is not async-signal-safe.
+void ServeUntilSignalled(grpc::Server* server) {
+  std::signal(SIGINT, OnSignal);
+  std::signal(SIGTERM, OnSignal);
+  std::thread watcher([server] {
+    while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Log("shutdown signal received, stopping...");
+    server->Shutdown();
+  });
+  server->Wait();
+  watcher.join();
+}
 
-int main() {
-  // Line-buffer stdout so logs appear in real time even when redirected to a file or pipe.
-  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+// Storage nodes announce themselves to the control plane. Retried because in a compose cluster
+// the metadata node may still be starting; the ring stays empty until this succeeds.
+void RegisterWithMetadata(const std::string& metadata_address, const std::string& node_id,
+                          const std::string& advertise) {
+  auto stub = atlas::MetadataService::NewStub(
+      grpc::CreateChannel(metadata_address, grpc::InsecureChannelCredentials()));
+  while (!g_stop.load()) {
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+    atlas::UpdateMembershipRequest request;
+    request.mutable_node()->set_node_id(node_id);
+    request.mutable_node()->set_address(advertise);
+    request.mutable_node()->add_roles(atlas::STORAGE);
+    request.set_change(atlas::UpdateMembershipRequest::JOIN);
+    atlas::RingState response;
+    if (stub->UpdateMembership(&ctx, request, &response).ok()) {
+      Log("joined the ring at " + metadata_address + " as " + advertise + " (ring version " +
+          std::to_string(response.version()) + ", " + std::to_string(response.nodes_size()) +
+          " nodes)");
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+  }
+}
 
-  const std::string id = EnvOr("ATLAS_NODE_ID", "node-0");
-  const std::string listen = EnvOr("ATLAS_LISTEN", "0.0.0.0:50051");
-  const std::vector<std::string> peers = Split(EnvOr("ATLAS_PEERS", ""), ',');
-
+int RunStorage(const std::string& id, const std::string& listen, const std::string& advertise) {
   const std::string data_dir = EnvOr("ATLAS_DATA_DIR", "atlas-data-" + id);
   atlas::ChunkStore store(data_dir);
   if (!store.ok()) {
@@ -88,48 +121,70 @@ int main() {
     std::cerr << "[" << id << "] failed to bind " << listen << std::endl;
     return 1;
   }
-  Log(id, "listening on " + listen +
-              " | peers: " + (peers.empty() ? "(none)" : EnvOr("ATLAS_PEERS", "")));
+  Log("storage node listening on " + listen + " | data " + data_dir);
 
-  // Graceful shutdown: SIGINT/SIGTERM (e.g. `docker compose down`) flip g_stop; a watcher
-  // thread then calls server->Shutdown(), which unblocks server->Wait() below so the cleanup
-  // path actually runs. We shut down from a normal thread because Shutdown() is not
-  // async-signal-safe to call directly from the handler.
-  std::signal(SIGINT, OnSignal);
-  std::signal(SIGTERM, OnSignal);
+  std::thread registrar;
+  const std::string metadata_address = EnvOr("ATLAS_METADATA", "");
+  if (!metadata_address.empty()) {
+    registrar = std::thread([&] { RegisterWithMetadata(metadata_address, id, advertise); });
+  }
 
-  std::atomic<bool> running{true};
-  std::thread heartbeats([&] {
-    std::this_thread::sleep_for(std::chrono::seconds(2));  // let peers come up
-    while (running.load()) {
-      for (const auto& peer : peers) {
-        auto channel = grpc::CreateChannel(peer, grpc::InsecureChannelCredentials());
-        auto stub = atlas::StorageService::NewStub(channel);
-        grpc::ClientContext ctx;
-        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
-        atlas::HeartbeatRequest req;
-        req.set_from_node_id(id);
-        req.set_ring_version_seen(0);
-        atlas::HeartbeatResponse resp;
-        const grpc::Status st = stub->Heartbeat(&ctx, req, &resp);
-        Log(id, st.ok() ? ("-> peer " + peer + " OK")
-                        : ("-> peer " + peer + " UNREACHABLE: " + st.error_message()));
-      }
-      std::this_thread::sleep_for(std::chrono::seconds(3));
-    }
-  });
-
-  std::thread watcher([&] {
-    while (!g_stop.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    Log(id, "shutdown signal received, stopping...");
-    server->Shutdown();
-  });
-
-  server->Wait();  // returns once the watcher calls Shutdown()
-  running.store(false);
-  heartbeats.join();
-  watcher.join();
+  ServeUntilSignalled(server.get());
+  if (registrar.joinable()) registrar.join();
   return 0;
+}
+
+int RunMetadata(const std::string& id, const std::string& listen) {
+  const std::string data_dir = EnvOr("ATLAS_DATA_DIR", "atlas-data-" + id);
+  atlas::MetadataStore store(data_dir);
+  if (!store.ok()) {
+    std::cerr << "[" << id << "] failed to open metadata store at " << data_dir << std::endl;
+    return 1;
+  }
+  atlas::MetadataServiceImpl service(&store);
+
+  grpc::EnableDefaultHealthCheckService(true);
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort(listen, grpc::InsecureServerCredentials());
+  builder.RegisterService(&service);
+  std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
+  if (!server) {
+    std::cerr << "[" << id << "] failed to bind " << listen << std::endl;
+    return 1;
+  }
+
+  atlas::MaintenanceOptions options;
+  options.interval = std::chrono::milliseconds(EnvInt("ATLAS_HEAL_INTERVAL_MS", 2000));
+  options.failure_threshold = EnvInt("ATLAS_FAILURE_THRESHOLD", 3);
+  atlas::ClusterMaintenance maintenance(
+      &store, [&service] { return service.SnapshotRing(); }, [](const std::string& m) { Log(m); },
+      options);
+
+  Log("metadata node listening on " + listen + " | data " + data_dir);
+  Log("maintenance loop every " + std::to_string(options.interval.count()) + "ms, node declared " +
+      "dead after " + std::to_string(options.failure_threshold) + " missed probes");
+  maintenance.Start();
+
+  ServeUntilSignalled(server.get());
+  maintenance.Stop();
+  return 0;
+}
+
+}  // namespace
+
+int main() {
+  // Line-buffer stdout so logs appear in real time even when redirected to a file or pipe.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
+  g_id = EnvOr("ATLAS_NODE_ID", "node-0");
+  const std::string role = EnvOr("ATLAS_ROLE", "storage");
+  const std::string listen = EnvOr("ATLAS_LISTEN", "0.0.0.0:50051");
+  const std::string advertise = EnvOr("ATLAS_ADVERTISE", listen);
+
+  if (role == "metadata") return RunMetadata(g_id, listen);
+  if (role != "storage") {
+    std::cerr << "unknown ATLAS_ROLE '" << role << "' (expected 'storage' or 'metadata')\n";
+    return 2;
+  }
+  return RunStorage(g_id, listen, advertise);
 }

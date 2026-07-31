@@ -68,6 +68,13 @@ grpc::Status MetadataServiceImpl::UpdateMembership(grpc::ServerContext* /*contex
   return grpc::Status::OK;
 }
 
+RingState MetadataServiceImpl::SnapshotRing() const {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  RingState state;
+  FillRingState(&state);
+  return state;
+}
+
 grpc::Status MetadataServiceImpl::ReportFailure(grpc::ServerContext* /*context*/,
                                                 const FailureReport* /*request*/,
                                                 Status* response) {

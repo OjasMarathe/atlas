@@ -101,8 +101,11 @@ atlas/
 
 ## Status
 
-**Phase 0 — Foundations** (in progress). See [docs/plan/roadmap.md](docs/plan/roadmap.md)
-for the full phased plan and [docs/plan/progress.md](docs/plan/progress.md) for the running log.
+**Phases 0–2 complete** — a running, self-healing distributed file system: content-addressed
+chunking, consistent-hashing placement, 3× replication with a 2-of-3 write quorum, copy-on-write
+versioning, failure detection, and automatic re-replication. (Phase 3's search engine is on its own
+branch.) See [docs/plan/roadmap.md](docs/plan/roadmap.md) for the phased plan and
+[docs/plan/progress.md](docs/plan/progress.md) for the running log.
 
 ## Team
 
@@ -134,6 +137,43 @@ cmake --build build
 docker compose up --build
 ```
 
-Phase 0's `atlas_node` is a skeleton: it serves `StorageService.Heartbeat` and pings its peers,
-proving the toolchain, proto codegen, gRPC networking, and multi-node wiring end to end. Real
-storage/search behavior arrives in Phases 1–4.
+## Running a cluster
+
+`atlas_node` runs as either role, selected by `ATLAS_ROLE`:
+
+- **`storage`** (default) — serves `StorageService` over a local RocksDB chunk store, and registers
+  itself into the ring at startup if `ATLAS_METADATA` is set.
+- **`metadata`** — serves `MetadataService` (file map + ring) and runs the **maintenance loop**:
+  probe every member for liveness, then re-replicate any chunk that has fallen below the
+  replication factor.
+
+```bash
+docker compose up --build            # 1 metadata + 4 storage nodes
+
+./build/atlas nodes                  # cluster membership
+./build/atlas put report.pdf ./report.pdf
+./build/atlas info report.pdf        # chunks + which nodes hold them
+./build/atlas get report.pdf ./out.pdf
+```
+
+`atlas` talks to `ATLAS_METADATA` (default `127.0.0.1:50050`).
+
+### See it heal itself
+
+```bash
+./scripts/demo-self-healing.sh
+```
+
+Starts a real 5-process cluster, uploads a file, **kills one of the nodes holding it**, and shows
+the control plane detect the failure and re-replicate the chunk onto a healthy node — then
+downloads the file and verifies it byte-for-byte:
+
+```
+uploaded demo.txt (266669 bytes, 1 chunk(s), replicated 3x)
+  87be32921eb6…  holders: node4 node1 node2
+== killing node2 ==
+[metadata] nodes down: node2
+[metadata] healed 1 replica(s) across 1 under-replicated chunk(s)
+  87be32921eb6…  holders: node4 node1 node2 node3      ← restored
+OK — downloaded file is identical to the original
+```

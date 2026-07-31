@@ -48,9 +48,15 @@ protobuf_generate(
   IMPORT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/proto"
   PROTOC_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
-# ---- Phase 0 node skeleton ----
+# ---- node: storage or metadata role (see src/node/main.cpp) ----
 add_executable(atlas_node src/node/main.cpp)
-target_link_libraries(atlas_node PRIVATE atlas_storage_svc gRPC::grpc++_reflection)
+target_link_libraries(atlas_node PRIVATE atlas_storage_svc atlas_metadata_svc atlas_cluster
+                                         gRPC::grpc++_reflection)
+
+# ---- atlas: command-line client (put / get / info / nodes) ----
+add_executable(atlas_cli tools/atlas_cli.cpp)
+set_target_properties(atlas_cli PROPERTIES OUTPUT_NAME atlas)
+target_link_libraries(atlas_cli PRIVATE atlas_client gRPC::grpc++)
 
 # ---- Phase 1: distributed file system ----
 add_library(atlas_common STATIC src/common/sha256.cpp src/common/hash_ring.cpp)
@@ -82,6 +88,7 @@ add_library(atlas_cluster STATIC
   src/cluster/health_tracker.cpp
   src/cluster/prober.cpp
   src/cluster/healer.cpp
+  src/cluster/maintenance.cpp
 )
 target_link_libraries(atlas_cluster
   PUBLIC atlas_common atlas_proto atlas_metadata atlas_chunk_transfer gRPC::grpc++)
@@ -124,6 +131,11 @@ add_test(NAME metadata_service_test COMMAND metadata_service_test)
 add_executable(health_tracker_test tests/health_tracker_test.cpp)
 target_link_libraries(health_tracker_test PRIVATE atlas_cluster atlas_storage_svc gRPC::grpc++)
 add_test(NAME health_tracker_test COMMAND health_tracker_test)
+
+add_executable(maintenance_test tests/maintenance_test.cpp)
+target_link_libraries(maintenance_test
+  PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME maintenance_test COMMAND maintenance_test)
 
 # Phase 2 headline: kill a node, watch the cluster restore the replication factor.
 add_executable(self_healing_test tests/self_healing_test.cpp)
