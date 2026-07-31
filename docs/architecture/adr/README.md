@@ -21,14 +21,14 @@ Copy an existing one as a template.
 | [0001](0001-language-cpp20.md) | Core language: C++20 | Accepted |
 | [0002](0002-storage-engine-rocksdb.md) | Embedded storage engine: RocksDB | Accepted |
 | [0003](0003-dependency-manager-vcpkg.md) | C++ dependency manager: vcpkg | Accepted |
-| [0005](0005-metadata-single-node-m1.md) | Metadata: single node for M1 | Accepted (M1) |
 | [0004](0004-replication-consistency.md) | Replication & consistency (3×, W=2/R=1) | Accepted |
+| [0005](0005-metadata-single-node-m1.md) | Metadata: single node for M1 | Accepted (M1) |
 | [0006](0006-search-index-document-partitioned.md) | Search index: partition by document | Accepted |
+| [0007](0007-inverted-index-format-compression.md) | Inverted-index format & posting-list compression | Accepted |
 | [0009](0009-failure-detection-and-healing.md) | Failure detection & self-healing model | Accepted |
 
 ### Upcoming ADRs to write
 
-- **0007** — Inverted-index on-disk format & posting-list compression — *Phase 3* (drafted on the
-  search branch).
-- **0008** — Query-parsing location: coordinator vs. search shard — *Phase 3* (reserved for the
-  search track; Phase 2 skipped to 0009 to avoid a collision).
+- **0008** — Query-parsing location: coordinator vs. search shard — *Phase 3* (candidate, see
+  ADR-0007's carried-forward open question). Phase 2 skipped to 0009 to leave 0008 for the
+  search track.

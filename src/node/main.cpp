@@ -1,8 +1,10 @@
 // Atlas node — runs as either a storage node or the metadata (control-plane) node.
 //
 //   ATLAS_ROLE=storage  (default)
-//     Serves StorageService over a local RocksDB chunk store. If ATLAS_METADATA is set, it
-//     registers itself into the ring at startup (retrying until the control plane is up).
+//     Serves StorageService over a local RocksDB chunk store (Phase 1) *and* this node's own
+//     SearchService shard on the same port (Phase 3, ADR-0006 — a shard indexes the documents
+//     whose chunks live on its co-located storage node). If ATLAS_METADATA is set, it registers
+//     itself into the ring at startup (retrying until the control plane is up).
 //
 //   ATLAS_ROLE=metadata
 //     Serves MetadataService (file map + ring) and runs the maintenance loop: probe every member
@@ -35,6 +37,8 @@
 #include "metadata/metadata_store.h"
 #include "storage/chunk_store.h"
 #include "storage/storage_service.h"
+
+#include "search/search_service.h"
 
 namespace {
 
@@ -112,10 +116,15 @@ int RunStorage(const std::string& id, const std::string& listen, const std::stri
   }
   atlas::StorageServiceImpl service(&store);
 
+  // Every node also serves its own search shard (ADR-0006: a shard indexes the documents whose
+  // chunks live on its co-located storage node). Empty until something calls IndexDocument.
+  atlas::search::SearchServiceImpl search_service;
+
   grpc::EnableDefaultHealthCheckService(true);
   grpc::ServerBuilder builder;
   builder.AddListeningPort(listen, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
+  builder.RegisterService(&search_service);
   std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
   if (!server) {
     std::cerr << "[" << id << "] failed to bind " << listen << std::endl;

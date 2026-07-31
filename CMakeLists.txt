@@ -9,11 +9,23 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Sanitizers (ADR-0001 mitigation). Opt-in: cmake --preset default -DATLAS_SANITIZE=ON
-option(ATLAS_SANITIZE "Enable AddressSanitizer + UBSan" OFF)
+# Sanitizers (ADR-0001 mitigation). Opt-in, and selectable — because AddressSanitizer hangs in
+# dyld's initializers before main() on macOS 26 / Apple clang 17 (reproducible with an empty
+# main), so a macOS dev needs UBSan without ASan:
+#   -DATLAS_SANITIZE=ON         -> address,undefined  (Linux CI / Docker)
+#   -DATLAS_SANITIZE=undefined  -> UBSan only         (macOS)
+#   -DATLAS_SANITIZE=OFF        -> default
+set(ATLAS_SANITIZE "OFF" CACHE STRING
+    "Sanitizers: OFF, ON (=address,undefined), or an explicit -fsanitize list")
 if(ATLAS_SANITIZE)
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=address,undefined)
+  if(ATLAS_SANITIZE STREQUAL "ON")
+    set(atlas_sanitizers "address,undefined")
+  else()
+    set(atlas_sanitizers "${ATLAS_SANITIZE}")
+  endif()
+  message(STATUS "Atlas: sanitizers enabled -> ${atlas_sanitizers}")
+  add_compile_options(-fsanitize=${atlas_sanitizers} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${atlas_sanitizers})
 endif()
 
 find_package(Protobuf CONFIG REQUIRED)
@@ -48,19 +60,19 @@ protobuf_generate(
   IMPORT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/proto"
   PROTOC_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
-# ---- node: storage or metadata role (see src/node/main.cpp) ----
-add_executable(atlas_node src/node/main.cpp)
-target_link_libraries(atlas_node PRIVATE atlas_storage_svc atlas_metadata_svc atlas_cluster
-                                         gRPC::grpc++_reflection)
+# ============================ shared primitives ============================
 
-# ---- atlas: command-line client (put / get / info / nodes) ----
-add_executable(atlas_cli tools/atlas_cli.cpp)
-set_target_properties(atlas_cli PROPERTIES OUTPUT_NAME atlas)
-target_link_libraries(atlas_cli PRIVATE atlas_client gRPC::grpc++)
-
-# ---- Phase 1: distributed file system ----
 add_library(atlas_common STATIC src/common/sha256.cpp src/common/hash_ring.cpp)
 target_include_directories(atlas_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+# ---- shared query parser ----
+# Not part of atlas_search on purpose: Phase 4's coordinator parses a query once and ships the
+# tree to every shard, so parsing must not live inside the shard. Zero dependencies — the term
+# analyzer is injected by the caller.
+add_library(atlas_query STATIC src/common/query/parser.cpp)
+target_include_directories(atlas_query PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+# ======================= Phase 1: distributed file system =======================
 
 add_library(atlas_dfs STATIC src/dfs/chunking.cpp)
 target_link_libraries(atlas_dfs PUBLIC atlas_common)
@@ -97,8 +109,55 @@ target_link_libraries(atlas_cluster
 add_library(atlas_client STATIC src/client/client.cpp)
 target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_chunk_transfer atlas_proto gRPC::grpc++)
 
-# ---- tests ----
+# =========================== Phase 3: search engine ===========================
+
+# Deliberately independent of atlas_proto: the index/ranking core is testable against a local
+# corpus, so it doesn't wait on the storage track (see docs/plan/phase-3-kickoff.md).
+add_library(atlas_search STATIC
+  src/search/tokenizer.cpp
+  src/search/stopwords.cpp
+  src/search/stemmer.cpp
+  src/search/text_pipeline.cpp
+  src/search/inverted_index.cpp
+  src/search/postings.cpp
+  src/search/posting_codec.cpp
+  src/search/ranker.cpp
+  src/search/trie.cpp
+  src/search/bk_tree.cpp
+  src/search/search_engine.cpp
+  src/search/corpus.cpp
+)
+target_include_directories(atlas_search PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(atlas_search PUBLIC atlas_query)
+
+# The gRPC adapter is a separate target so atlas_search itself stays proto-free.
+add_library(atlas_search_service STATIC src/search/search_service.cpp)
+target_link_libraries(atlas_search_service PUBLIC atlas_search atlas_proto gRPC::grpc++)
+
+# ============================== executables ==============================
+
+# One binary, two roles (ATLAS_ROLE=storage|metadata). A storage node also serves this shard's
+# search service (Phase 3); a metadata node runs the control plane + the maintenance loop.
+add_executable(atlas_node src/node/main.cpp)
+# atlas_storage_svc / atlas_search_service / atlas_cluster already propagate atlas_proto and
+# gRPC::grpc++ publicly; naming them again here makes the linker warn about duplicates.
+target_link_libraries(atlas_node PRIVATE atlas_storage_svc atlas_search_service
+                                         atlas_metadata_svc atlas_cluster
+                                         gRPC::grpc++_reflection)
+
+# ---- atlas: command-line client (put / get / info / nodes) ----
+add_executable(atlas_cli tools/atlas_cli.cpp)
+set_target_properties(atlas_cli PROPERTIES OUTPUT_NAME atlas)
+target_link_libraries(atlas_cli PRIVATE atlas_client gRPC::grpc++)
+
+# ---- Phase 3 demo: index a corpus, run ranked queries, print timings ----
+add_executable(atlas_search_demo tools/search_demo.cpp)
+target_link_libraries(atlas_search_demo PRIVATE atlas_search)
+
+# ================================= tests =================================
+
 enable_testing()
+
 add_executable(atlas_tests tests/smoke_test.cpp)
 target_link_libraries(atlas_tests PRIVATE atlas_proto GTest::gtest)
 add_test(NAME atlas_tests COMMAND atlas_tests)
@@ -151,5 +210,25 @@ add_test(NAME self_healing_test COMMAND self_healing_test)
 
 # End-to-end Milestone-1 test: metadata + storage nodes + the ingestion client, all in-process.
 add_executable(phase1_e2e_test tests/phase1_e2e_test.cpp)
-target_link_libraries(phase1_e2e_test PRIVATE atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+target_link_libraries(phase1_e2e_test PRIVATE atlas_client atlas_storage_svc atlas_metadata_svc
+                                              gRPC::grpc++)
 add_test(NAME phase1_e2e_test COMMAND phase1_e2e_test)
+
+add_executable(atlas_search_tests
+  tests/search/tokenizer_test.cpp
+  tests/search/stemmer_test.cpp
+  tests/search/text_pipeline_test.cpp
+  tests/search/inverted_index_test.cpp
+  tests/search/postings_test.cpp
+  tests/search/ranker_test.cpp
+  tests/search/search_engine_test.cpp
+  tests/search/trie_test.cpp
+  tests/search/bk_tree_test.cpp
+  tests/search/posting_codec_test.cpp
+  tests/search/incremental_index_test.cpp
+  tests/search/phrase_filter_test.cpp
+  tests/common/query/parser_test.cpp
+)
+# gtest_main pulls in gtest transitively; naming both makes the linker warn about duplicates.
+target_link_libraries(atlas_search_tests PRIVATE atlas_search GTest::gtest_main)
+add_test(NAME atlas_search_tests COMMAND atlas_search_tests)

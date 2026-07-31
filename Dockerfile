@@ -2,19 +2,29 @@
 FROM ubuntu:24.04 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl zip unzip tar ca-certificates \
+      git curl zip unzip tar ca-certificates jq \
       build-essential cmake ninja-build pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VCPKG_ROOT=/opt/vcpkg
-RUN git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG_ROOT" \
+WORKDIR /src
+
+# Copy the manifest first: it pins the vcpkg baseline used just below, and keeping it ahead of
+# the source COPYs lets the (slow) dependency layer cache across code-only changes.
+COPY vcpkg.json ./
+
+# Full clone, then check out the exact commit pinned in vcpkg.json's "builtin-baseline".
+# A --depth 1 clone of vcpkg's tip does NOT contain the baseline commit, and Configure then
+# fails to resolve dependencies — the same trap that broke the first CI run.
+RUN git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT" \
+    && git -C "$VCPKG_ROOT" checkout "$(jq -r '."builtin-baseline"' vcpkg.json)" \
     && "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
-WORKDIR /src
-# Copy the manifest first so the (slow) dependency build layer caches across code changes.
-COPY vcpkg.json CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json ./
 COPY proto ./proto
 COPY src ./src
+# tests/ is required even though only atlas_node is built: CMakeLists declares the test targets,
+# and CMake validates every declared source path at configure time.
 COPY tests ./tests
 
 RUN cmake --preset default && cmake --build build --target atlas_node
