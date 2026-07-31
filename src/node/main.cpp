@@ -1,13 +1,15 @@
-// Atlas Phase 0 node skeleton.
+// Atlas storage + search node.
 //
-// Proves the full toolchain end to end: proto codegen (common + storage), a gRPC server
-// implementing StorageService.Heartbeat, a gRPC client pinging peers, and multi-node wiring
-// under docker-compose. This is the embryo of the Phase 2 heartbeat/failure-detection loop.
+// Serves two roles on one port: StorageService over a local RocksDB chunk store (Phase 1) and
+// this node's own SearchService shard (Phase 3, ADR-0006 — a shard indexes the documents whose
+// chunks live on its co-located storage node). Also pings its peers, the embryo of the Phase 2
+// heartbeat/failure-detection loop.
 //
 // Config via env:
 //   ATLAS_NODE_ID   node's id                 (default "node-0")
 //   ATLAS_LISTEN    listen address host:port  (default "0.0.0.0:50051")
-//   ATLAS_PEERS     comma-separated peers      (default "" -> no peers)
+//   ATLAS_PEERS     comma-separated peers     (default "" -> no peers)
+//   ATLAS_DATA_DIR  chunk store path          (default "atlas-data-<node id>")
 
 #include <atomic>
 #include <chrono>
@@ -28,6 +30,8 @@
 #include "storage.grpc.pb.h"
 #include "storage/chunk_store.h"
 #include "storage/storage_service.h"
+
+#include "search/search_service.h"
 
 namespace {
 
@@ -79,10 +83,15 @@ int main() {
   }
   atlas::StorageServiceImpl service(&store);
 
+  // Every node also serves its own search shard (ADR-0006: a shard indexes the documents whose
+  // chunks live on its co-located storage node). Empty until something calls IndexDocument.
+  atlas::search::SearchServiceImpl search_service;
+
   grpc::EnableDefaultHealthCheckService(true);
   grpc::ServerBuilder builder;
   builder.AddListeningPort(listen, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
+  builder.RegisterService(&search_service);
   std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
   if (!server) {
     std::cerr << "[" << id << "] failed to bind " << listen << std::endl;

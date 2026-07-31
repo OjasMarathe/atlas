@@ -77,7 +77,9 @@ Turn stored bytes into answers. *(3a = the minimal must-have subset.)*
 
 **DoD (3a):** index the demo corpus; a keyword query returns BM25-ranked results with the
 right documents on top, sub-second.
-**Concepts owed:** [tokenization-stemming], [inverted-index], [posting-list-compression], [bm25] ✅, [trie-autocomplete], [bk-tree-levenshtein], [boolean-phrase-search].
+**Concepts owed:** [tokenization-stemming] ✅, [inverted-index] ✅, [posting-list-compression] ✅,
+[bm25] ✅, [incremental-indexing] ✅, [trie-autocomplete] ✅, [bk-tree-levenshtein] ✅,
+[boolean-phrase-search] ✅ — all written.
 
 ## Phase 4 — Distributed Query Engine `M1`
 
