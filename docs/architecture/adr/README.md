@@ -21,12 +21,14 @@ Copy an existing one as a template.
 | [0001](0001-language-cpp20.md) | Core language: C++20 | Accepted |
 | [0002](0002-storage-engine-rocksdb.md) | Embedded storage engine: RocksDB | Accepted |
 | [0003](0003-dependency-manager-vcpkg.md) | C++ dependency manager: vcpkg | Accepted |
+| [0004](0004-replication-consistency.md) | Replication & consistency (3×, W=2/R=1) | Accepted |
 | [0005](0005-metadata-single-node-m1.md) | Metadata: single node for M1 | Accepted (M1) |
 | [0006](0006-search-index-document-partitioned.md) | Search index: partition by document | Accepted |
 | [0007](0007-inverted-index-format-compression.md) | Inverted-index format & posting-list compression | Accepted |
 
 ### Upcoming ADRs to write
 
-- **0004** — Replication & consistency model (quorum, ack semantics) — *Phase 1*.
 - **0008** — Query-parsing location: coordinator vs. search shard — *Phase 3* (candidate, see
   ADR-0007's carried-forward open question).
+- **0009** — Failure detection & self-healing model — *Phase 2* (written on the fault-tolerance
+  branch; skipped 0008 to leave it for the search track).

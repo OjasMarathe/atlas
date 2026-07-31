@@ -27,11 +27,11 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 
 ### Distributed file system & storage (Phase 1)
 - [x] [consistent-hashing](consistent-hashing.md) — placing data on nodes so joins/leaves move little
-- [ ] chunking — fixed-size, content-addressed blocks
-- [ ] replication — primary/secondary/tertiary placement & write path
-- [ ] wal — write-ahead logging for crash consistency
-- [ ] sha256-checksums — integrity & content addressing
-- [ ] versioning — copy-on-write file versions
+- [x] [chunking](chunking.md) — fixed-size, content-addressed blocks
+- [x] [replication](replication.md) — primary/secondary/tertiary placement & write path
+- [x] [wal](wal.md) — write-ahead logging for crash consistency
+- [x] [sha256-checksums](sha256-checksums.md) — integrity & content addressing
+- [x] [versioning](versioning.md) — copy-on-write file versions
 - [ ] garbage-collection — reclaiming dead chunks/versions
 - [ ] merkle-tree — efficient replica divergence detection *(stretch)*
 

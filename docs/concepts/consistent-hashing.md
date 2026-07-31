@@ -1,6 +1,6 @@
 # Consistent Hashing
 
-**Area:** Distributed file system  ·  **Phase:** 1  ·  **Status:** flagship exemplar
+**Area:** Distributed file system  ·  **Phase:** 1  ·  **Status:** implemented + verified (flagship exemplar)
 
 ## TL;DR
 
@@ -89,6 +89,10 @@ std::vector<NodeId> HashRing::replicas(std::string_view key, int R) const {
 
 Adding a node inserts its V vnodes into the map; removing one erases them. Only keys in the
 affected arcs change owner — we recompute placement only for those chunks and migrate them.
+
+**Verified** in `tests/hash_ring_test.cpp`: 3-distinct-replica placement, ~1/N load balance, and
+the defining property — removing a node moves *only* that node's keys (`moved == owned_by_that_node`),
+never everyone's.
 
 ## Complexity & trade-offs
 

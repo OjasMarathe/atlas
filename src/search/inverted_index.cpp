@@ -216,6 +216,9 @@ bool InvertedIndex::Load(std::string_view bytes) {
 
   std::uint64_t doc_count = 0;
   if (!GetVarint(bytes, &offset, &doc_count)) return false;
+  // Every record costs at least a byte, so a count exceeding the remaining buffer is corruption.
+  // Checking up front turns a damaged file into a clean `false` instead of a huge allocation.
+  if (doc_count > bytes.size() - offset) return false;
   for (std::uint64_t i = 0; i < doc_count; ++i) {
     DocumentMeta meta;
     std::uint64_t length = 0;
@@ -244,6 +247,7 @@ bool InvertedIndex::Load(std::string_view bytes) {
 
   std::uint64_t term_count = 0;
   if (!GetVarint(bytes, &offset, &term_count)) return false;
+  if (term_count > bytes.size() - offset) return false;
   for (std::uint64_t i = 0; i < term_count; ++i) {
     std::string term;
     std::string encoded;
@@ -256,6 +260,7 @@ bool InvertedIndex::Load(std::string_view bytes) {
 
   std::uint64_t vocabulary_size = 0;
   if (!GetVarint(bytes, &offset, &vocabulary_size)) return false;
+  if (vocabulary_size > bytes.size() - offset) return false;
   for (std::uint64_t i = 0; i < vocabulary_size; ++i) {
     std::string word;
     std::uint64_t count = 0;

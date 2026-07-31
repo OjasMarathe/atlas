@@ -54,6 +54,10 @@ bool DecodePostingList(std::string_view bytes, PostingList* out) {
   std::size_t offset = 0;
   std::uint64_t count = 0;
   if (!GetVarint(bytes, &offset, &count)) return false;
+  // Sanity-check the declared count against what's actually left: every posting costs at least
+  // three varint bytes, so a count larger than the remaining buffer means corruption. Without
+  // this, a truncated or damaged index would reserve() an arbitrary amount before failing.
+  if (count > bytes.size() - offset) return false;
   out->reserve(count);
 
   DocId previous_doc = 0;
@@ -69,6 +73,7 @@ bool DecodePostingList(std::string_view bytes, PostingList* out) {
     posting.doc_id = static_cast<DocId>(previous_doc + doc_gap);
     previous_doc = posting.doc_id;
     posting.term_frequency = static_cast<std::uint32_t>(term_frequency);
+    if (position_count > bytes.size() - offset) return false;  // same guard, per posting
     posting.positions.reserve(position_count);
 
     std::uint32_t previous_position = 0;

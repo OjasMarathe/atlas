@@ -94,24 +94,30 @@ std::vector<DocId> SearchEngine::EvaluatePhrase(const query::Node* node) const {
   // A document matches when some position p aligns every term: term i must occur at
   // p + its offset within the phrase.
   std::vector<DocId> matches;
+  std::vector<const Posting*> resolved(lists.size(), nullptr);
   for (const DocId doc_id : candidates) {
-    const Posting* first = FindPosting(*lists.front(), doc_id);
-    if (first == nullptr) continue;
-    const std::uint32_t first_offset = node->children.front()->phrase_offset;
+    // Resolve each term's posting for this document once. Which posting holds a term in this
+    // document doesn't depend on the anchor being tested, so looking it up inside the position
+    // loop repeats the same binary search for every candidate position.
+    bool all_present = true;
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+      resolved[i] = FindPosting(*lists[i], doc_id);
+      if (resolved[i] == nullptr) {
+        all_present = false;
+        break;
+      }
+    }
+    if (!all_present) continue;
 
-    for (const std::uint32_t position : first->positions) {
+    const std::uint32_t first_offset = node->children.front()->phrase_offset;
+    for (const std::uint32_t position : resolved.front()->positions) {
       if (position < first_offset) continue;
       const std::uint32_t anchor = position - first_offset;
       bool aligned = true;
       for (std::size_t i = 1; i < lists.size() && aligned; ++i) {
-        const Posting* posting = FindPosting(*lists[i], doc_id);
-        if (posting == nullptr) {
-          aligned = false;
-          break;
-        }
         const std::uint32_t expected = anchor + node->children[i]->phrase_offset;
-        aligned =
-            std::binary_search(posting->positions.begin(), posting->positions.end(), expected);
+        aligned = std::binary_search(resolved[i]->positions.begin(), resolved[i]->positions.end(),
+                                     expected);
       }
       if (aligned) {
         matches.push_back(doc_id);

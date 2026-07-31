@@ -1,17 +1,20 @@
-// Atlas Phase 0 node skeleton.
+// Atlas storage + search node.
 //
-// Proves the full toolchain end to end: proto codegen (common + storage), a gRPC server
-// implementing StorageService.Heartbeat, a gRPC client pinging peers, and multi-node wiring
-// under docker-compose. This is the embryo of the Phase 2 heartbeat/failure-detection loop.
+// Serves two roles on one port: StorageService over a local RocksDB chunk store (Phase 1) and
+// this node's own SearchService shard (Phase 3, ADR-0006 — a shard indexes the documents whose
+// chunks live on its co-located storage node). Also pings its peers, the embryo of the Phase 2
+// heartbeat/failure-detection loop.
 //
 // Config via env:
 //   ATLAS_NODE_ID   node's id                 (default "node-0")
 //   ATLAS_LISTEN    listen address host:port  (default "0.0.0.0:50051")
-//   ATLAS_PEERS     comma-separated peers      (default "" -> no peers)
+//   ATLAS_PEERS     comma-separated peers     (default "" -> no peers)
+//   ATLAS_DATA_DIR  chunk store path          (default "atlas-data-<node id>")
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -25,6 +28,8 @@
 
 #include "common.pb.h"
 #include "storage.grpc.pb.h"
+#include "storage/chunk_store.h"
+#include "storage/storage_service.h"
 
 #include "search/search_service.h"
 
@@ -62,33 +67,26 @@ std::vector<std::string> Split(const std::string& s, char delim) {
 
 }  // namespace
 
-// Minimal StorageService: only Heartbeat is implemented for Phase 0; every other RPC returns
-// UNIMPLEMENTED by default (the generated base class handles that).
-class NodeService final : public atlas::StorageService::Service {
- public:
-  explicit NodeService(std::string id) : id_(std::move(id)) {}
-
-  grpc::Status Heartbeat(grpc::ServerContext*, const atlas::HeartbeatRequest* req,
-                         atlas::HeartbeatResponse* resp) override {
-    Log(id_, "<- heartbeat from " + req->from_node_id());
-    resp->mutable_status()->set_code(atlas::Status::OK);
-    resp->set_ring_version(0);
-    return grpc::Status::OK;
-  }
-
- private:
-  std::string id_;
-};
-
 int main() {
+  // Line-buffer stdout so logs appear in real time even when redirected to a file or pipe.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
   const std::string id = EnvOr("ATLAS_NODE_ID", "node-0");
   const std::string listen = EnvOr("ATLAS_LISTEN", "0.0.0.0:50051");
   const std::vector<std::string> peers = Split(EnvOr("ATLAS_PEERS", ""), ',');
 
-  NodeService service(id);
+  const std::string data_dir = EnvOr("ATLAS_DATA_DIR", "atlas-data-" + id);
+  atlas::ChunkStore store(data_dir);
+  if (!store.ok()) {
+    std::cerr << "[" << id << "] failed to open chunk store at " << data_dir << std::endl;
+    return 1;
+  }
+  atlas::StorageServiceImpl service(&store);
+
   // Every node also serves its own search shard (ADR-0006: a shard indexes the documents whose
   // chunks live on its co-located storage node). Empty until something calls IndexDocument.
   atlas::search::SearchServiceImpl search_service;
+
   grpc::EnableDefaultHealthCheckService(true);
   grpc::ServerBuilder builder;
   builder.AddListeningPort(listen, grpc::InsecureServerCredentials());
