@@ -31,9 +31,10 @@ copies go, *when* is a write done, and how do reads cope with a dead copy.
 
 ## Our implementation in Atlas
 
-- `src/client/client.cpp` — **Upload**: chunk → `ring.replicas` → `PutChunk` to each → require W=2 →
-  `RegisterFile`. **Download**: `GetFile` → for each chunk, `GetChunk` from replicas in order until
-  one succeeds (read-around) → reassemble → verify whole-file SHA-256.
+- `src/client/client.cpp` — **Upload**: chunk → `ring.replicas` → `PutChunk` to each → record **only
+  the nodes that acked** → require W=2 → `RegisterFile`. **Download**: `GetFile` → for each chunk,
+  `GetChunk` from the recorded holders in order until one succeeds (read-around) → reassemble →
+  verify whole-file SHA-256.
 - **Client-driven fan-out for M1**: the client writes to all 3 nodes directly. The proto has a
   `ReplicateChunk` RPC for primary-driven fan-out (primary pushes to its secondaries), which halves
   client bandwidth — a natural refinement, deferred.
@@ -54,13 +55,17 @@ copies go, *when* is a write done, and how do reads cope with a dead copy.
 ## Failure modes & edge cases
 
 - **Fewer than R nodes** — Upload rejects (can't meet the replication factor).
-- **One replica down at write** — still acks on the other 2 (W=2); the missing copy waits for self-heal.
+- **One replica down at write** — still acks on the other 2 (W=2), and the placement records **only
+  the 2 that acked**. Recording all 3 *intended* replicas would make the chunk look permanently
+  healthy and starve Phase 2's healer of its input.
 - **One replica down at read** — read-around serves from a survivor. If *all* replicas of a chunk are
   down, the read fails (nothing healthy to serve).
 - **Dead node still in membership** — for M1 a killed node stays in the ring (failure detection is
   Phase 2); read-around tolerates it, and a fail-fast RPC deadline keeps a dead replica from stalling
   the read.
-- **Under-replication is silent in M1** — nothing yet restores a lost 3rd copy; that's Phase 2.
+- **Under-replication is visible but unrepaired in M1** — the placement list is the truth about who
+  holds a chunk, so comparing it against `ring.Replicas(chunk_id, R)` (intended vs actual) detects a
+  missing copy. Nothing yet *acts* on that difference; re-replication is Phase 2.
 
 ## Alternatives we considered
 

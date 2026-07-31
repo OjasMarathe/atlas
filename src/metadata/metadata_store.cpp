@@ -2,6 +2,7 @@
 
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
+#include <rocksdb/write_batch.h>
 
 #include <chrono>
 #include <cstdio>
@@ -54,10 +55,17 @@ FileMetadata MetadataStore::RegisterFile(FileMetadata meta) {
 
   std::string bytes;
   meta.SerializeToString(&bytes);
+
+  // Atomic commit. This is the system's commit point (ADR-0004: a file exists once metadata
+  // records it), so the version blob and the "latest" pointer must land together — as two
+  // separate Puts, a crash between them would durably store a version that LatestVersion never
+  // returns, leaving the just-committed file invisible while GetFile(version=0) served stale data.
+  rocksdb::WriteBatch batch;
+  batch.Put(VerKey(meta.file_id(), next), bytes);
+  batch.Put(LatestKey(meta.file_id()), std::to_string(next));
   rocksdb::WriteOptions wo;
   wo.sync = true;
-  db_->Put(wo, VerKey(meta.file_id(), next), bytes);
-  db_->Put(wo, LatestKey(meta.file_id()), std::to_string(next));
+  db_->Write(wo, &batch);
   return meta;
 }
 

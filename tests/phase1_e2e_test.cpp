@@ -86,6 +86,16 @@ std::string AddressOf(const std::vector<std::unique_ptr<StorageNode>>& nodes,
   return {};
 }
 
+bool FetchMeta(const std::string& meta_address, const std::string& file_id,
+               atlas::FileMetadata* out) {
+  auto stub = atlas::MetadataService::NewStub(
+      grpc::CreateChannel(meta_address, grpc::InsecureChannelCredentials()));
+  grpc::ClientContext ctx;
+  atlas::GetFileRequest req;
+  req.set_file_id(file_id);
+  return stub->GetFile(&ctx, req, out).ok();
+}
+
 // Direct GetChunk against one node, bypassing the client — used to confirm where replicas landed.
 bool NodeHasChunk(const std::string& address, const std::string& chunk_id) {
   auto stub = atlas::StorageService::NewStub(
@@ -150,14 +160,7 @@ int main() {
 
   // --- the chunk is placed on 3 distinct nodes, and all 3 actually hold it ---
   FileMetadata meta;
-  {
-    auto meta_stub = MetadataService::NewStub(
-        grpc::CreateChannel(meta_address, grpc::InsecureChannelCredentials()));
-    grpc::ClientContext ctx;
-    GetFileRequest req;
-    req.set_file_id("hello.txt");
-    CHECK(meta_stub->GetFile(&ctx, req, &meta).ok());
-  }
+  CHECK(FetchMeta(meta_address, "hello.txt", &meta));
   CHECK_EQ(meta.chunks_size(), 1);
   CHECK_EQ(meta.chunks(0).node_ids_size(), 3);
   const std::string chunk_id = meta.chunks(0).chunk().chunk_id();
@@ -174,6 +177,43 @@ int main() {
   CHECK(down.ok);
   CHECK_EQ(down.data, content);
 
+  // --- multi-chunk: splitting, ordering and reassembly through the real client path ---
+  // A small chunk size drives the multi-chunk path cheaply; the >4 MiB case below then exercises
+  // the true default boundary.
+  {
+    AtlasClient small_chunks(meta_address, /*chunk_size=*/256);
+    std::string many;
+    for (int i = 0; i < 400; ++i) many += "block-" + std::to_string(i) + "-payload;";
+
+    const UploadResult multi = small_chunks.Upload("multi.txt", "ojas", many);
+    CHECK(multi.ok);
+    if (!multi.ok) std::printf("multi-chunk upload failed: %s\n", multi.message.c_str());
+    CHECK(multi.chunks > 5u);
+
+    const DownloadResult back = small_chunks.Download("multi.txt");
+    CHECK(back.ok);
+    CHECK_EQ(back.data, many);  // ordering + boundary correctness across many chunks
+
+    FileMetadata multi_meta;
+    CHECK(FetchMeta(meta_address, "multi.txt", &multi_meta));
+    CHECK_EQ(static_cast<std::size_t>(multi_meta.chunks_size()), multi.chunks);
+    for (const ChunkPlacement& placement : multi_meta.chunks()) {
+      CHECK_EQ(placement.node_ids_size(), 3);  // every chunk replicated, not just the first
+    }
+  }
+
+  // --- a real >4 MiB file, over the default chunk size ---
+  {
+    std::string huge(5u * 1024 * 1024 + 12345, '\0');
+    for (std::size_t i = 0; i < huge.size(); ++i) huge[i] = static_cast<char>('a' + (i % 26));
+    const UploadResult up_huge = client.Upload("huge.bin", "ojas", huge);
+    CHECK(up_huge.ok);
+    CHECK_EQ(up_huge.chunks, 2u);  // one full 4 MiB chunk + the remainder
+    const DownloadResult down_huge = client.Download("huge.bin");
+    CHECK(down_huge.ok);
+    CHECK(down_huge.data == huge);
+  }
+
   // --- kill one replica, download STILL succeeds (read-around) ---
   const std::string dead = meta.chunks(0).node_ids(0);  // the primary
   for (const auto& node : nodes) {
@@ -184,6 +224,22 @@ int main() {
   CHECK_EQ(after_death.data, content);
   std::printf("read-around: killed %s, still served the file from a surviving replica\n",
               dead.c_str());
+
+  // --- a write that can't reach all 3 replicas records ONLY the nodes that acked ---
+  // Same bytes as hello.txt -> same chunk id -> the same three ring nodes, one of which is now
+  // dead. W=2 still succeeds, and the placement must show 2 holders — recording the dead node
+  // would make an under-replicated chunk look healthy to Phase 2's healer.
+  {
+    const UploadResult partial = client.Upload("hello-again.txt", "ojas", content);
+    CHECK(partial.ok);
+    FileMetadata partial_meta;
+    CHECK(FetchMeta(meta_address, "hello-again.txt", &partial_meta));
+    CHECK_EQ(partial_meta.chunks_size(), 1);
+    CHECK_EQ(partial_meta.chunks(0).node_ids_size(), 2);
+    for (const std::string& node_id : partial_meta.chunks(0).node_ids()) {
+      CHECK(node_id != dead);  // the dead replica must not be listed as a holder
+    }
+  }
 
   // --- re-upload creates a new version; download returns the latest (copy-on-write) ---
   const std::string content_v2 = "second version of the file";

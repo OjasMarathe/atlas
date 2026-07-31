@@ -7,6 +7,7 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include "dfs/chunking.h"
 #include "metadata.grpc.pb.h"
 #include "storage.grpc.pb.h"
 
@@ -34,7 +35,8 @@ class AtlasClient {
   static constexpr int kReplicationFactor = 3;
   static constexpr int kWriteQuorum = 2;  // W=2 of N=3: survives one node loss, no write stall
 
-  explicit AtlasClient(const std::string& metadata_address);
+  // chunk_size is configurable so tests can drive the multi-chunk path without multi-MiB files.
+  explicit AtlasClient(const std::string& metadata_address, std::size_t chunk_size = kChunkSize);
 
   UploadResult Upload(const std::string& file_id, const std::string& owner,
                       const std::string& data);
@@ -45,6 +47,7 @@ class AtlasClient {
   bool FetchRing(RingState* out);
 
   std::unique_ptr<MetadataService::Stub> metadata_;
+  std::size_t chunk_size_ = kChunkSize;
   std::unordered_map<std::string, std::unique_ptr<StorageService::Stub>> storage_;
 };
 

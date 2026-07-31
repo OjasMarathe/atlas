@@ -63,9 +63,10 @@ bool GetChunkFromNode(StorageService::Stub* stub, const std::string& chunk_id, s
 
 }  // namespace
 
-AtlasClient::AtlasClient(const std::string& metadata_address)
+AtlasClient::AtlasClient(const std::string& metadata_address, std::size_t chunk_size)
     : metadata_(MetadataService::NewStub(
-          grpc::CreateChannel(metadata_address, grpc::InsecureChannelCredentials()))) {}
+          grpc::CreateChannel(metadata_address, grpc::InsecureChannelCredentials()))),
+      chunk_size_(chunk_size) {}
 
 StorageService::Stub* AtlasClient::StorageAt(const std::string& address) {
   auto it = storage_.find(address);
@@ -105,17 +106,23 @@ UploadResult AtlasClient::Upload(const std::string& file_id, const std::string& 
   reg.set_replication_factor(kReplicationFactor);
   reg.set_sha256(Sha256Hex(data));
 
-  const std::vector<Chunk> chunks = ChunkBytes(data);
+  const std::vector<Chunk> chunks = ChunkBytes(data, chunk_size_);
   for (const Chunk& chunk : chunks) {
     const std::vector<NodeId> replicas = ring.Replicas(chunk.id, kReplicationFactor);
     ChunkPlacement* placement = reg.add_chunks();
     placement->mutable_chunk()->set_chunk_id(chunk.id);
     placement->mutable_chunk()->set_size(chunk.data.size());
 
+    // Record ONLY nodes that durably acked, so the placement list is the truth about who holds
+    // the bytes. Recording every *intended* replica would make an under-replicated chunk look
+    // healthy forever: Phase 2's healer compares this list against ring.Replicas(chunk_id, R) —
+    // intended vs actual — and that difference is exactly what it must repair.
     int acks = 0;
     for (const NodeId& node : replicas) {
-      placement->add_node_ids(node);  // record all intended replicas for read-around
-      if (PutChunkToNode(StorageAt(address[node]), chunk.id, chunk.data)) ++acks;
+      if (PutChunkToNode(StorageAt(address[node]), chunk.id, chunk.data)) {
+        placement->add_node_ids(node);
+        ++acks;
+      }
     }
     if (acks < kWriteQuorum) {
       return {false, "chunk " + chunk.id + " did not reach write quorum (W=2)", 0};

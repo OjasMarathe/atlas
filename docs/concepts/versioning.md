@@ -41,9 +41,11 @@ edits. Versioning keeps every state, and content-addressing makes it cheap.
 
 ## Failure modes & edge cases
 
-- The two writes (version metadata + `latest` pointer) aren't one atomic transaction in M1. A crash
-  between them leaves the version stored but `latest` lagging — a `WriteBatch` would make it atomic
-  (noted hardening). Recovery is simple regardless: `latest = max existing version`.
+- The two writes (version metadata + `latest` pointer) are committed in **one `rocksdb::WriteBatch`
+  with `sync=true`**, so they land together or not at all. They must be: this is the system's commit
+  point ([ADR-0004](../architecture/adr/0004-replication-consistency.md)), and as separate `Put`s a
+  crash between them would durably store a version that `LatestVersion` never returns — the
+  just-committed file invisible, with `GetFile(version=0)` serving stale data.
 - Concurrent `RegisterFile` on the same `file_id` could race the counter; the **single metadata node**
   ([ADR-0005](../architecture/adr/0005-metadata-single-node-m1.md)) serializes this for M1.
 
@@ -60,8 +62,9 @@ edits. Versioning keeps every state, and content-addressing makes it cheap.
 **Q: How do you version without re-storing the whole file?** Content-addressed chunks — a new version
 references unchanged chunks by their existing ids and only stores changed chunks.
 **Q: What's the `latest` pointer for?** `O(1)` resolution of the current version without scanning.
-**Q: Is `RegisterFile` atomic?** The two writes aren't a single transaction in M1; a `WriteBatch`
-would make it so — a documented hardening.
+**Q: Is `RegisterFile` atomic?** Yes — the version blob and the `latest` pointer go in one
+`WriteBatch` (sync). Two separate writes would let a crash between them hide a committed file
+behind a stale `latest`.
 **Q: How is an old version read?** Its metadata lists chunk ids; fetch and reassemble them.
 
 ## References
