@@ -18,8 +18,19 @@ TEST(StopWords, RecognizesFunctionWordsOnly) {
 
 TEST(Analyze, RunsTheFullPipeline) {
   // "how"/"does"/"a" are stop words; "filesystem" survives; "writes" stems to "write".
+  // Each Term carries {stem, surface form, position}.
   EXPECT_EQ(Analyze("How does a filesystem journal writes?"),
-            (std::vector<Term>{{"filesystem", 3}, {"journal", 4}, {"write", 5}}));
+            (std::vector<Term>{
+                {"filesystem", "filesystem", 3}, {"journal", "journal", 4}, {"write", "writes", 5}}));
+}
+
+// Autocomplete and spell correction suggest real words, so the analyzer keeps the surface form
+// alongside the stem it indexes by.
+TEST(Analyze, KeepsTheSurfaceFormBesideTheStem) {
+  const std::vector<Term> terms = Analyze("replicating");
+  ASSERT_EQ(terms.size(), 1U);
+  EXPECT_EQ(terms[0].text, "replic");
+  EXPECT_EQ(terms[0].surface, "replicating");
 }
 
 // Positions come from the pre-filter token stream, so the gap left by a dropped stop word is

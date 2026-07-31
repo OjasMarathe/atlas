@@ -76,7 +76,10 @@ add_library(atlas_search STATIC
   src/search/text_pipeline.cpp
   src/search/inverted_index.cpp
   src/search/postings.cpp
+  src/search/posting_codec.cpp
   src/search/ranker.cpp
+  src/search/trie.cpp
+  src/search/bk_tree.cpp
   src/search/search_engine.cpp
   src/search/corpus.cpp
 )
@@ -111,6 +114,11 @@ add_executable(atlas_search_tests
   tests/search/postings_test.cpp
   tests/search/ranker_test.cpp
   tests/search/search_engine_test.cpp
+  tests/search/trie_test.cpp
+  tests/search/bk_tree_test.cpp
+  tests/search/posting_codec_test.cpp
+  tests/search/incremental_index_test.cpp
+  tests/search/phrase_filter_test.cpp
   tests/common/query/parser_test.cpp
 )
 # gtest_main pulls in gtest transitively; naming both makes the linker warn about duplicates.

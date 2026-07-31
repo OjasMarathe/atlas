@@ -109,6 +109,42 @@ TEST(SearchEngine, TopKLimitsResults) {
   EXPECT_LE(engine.Search("nodes chunk log ranking", 1).size(), 1U);
 }
 
+// wal.md contains "write-ahead log". Querying the hyphenated word must find it: the query
+// analyzes to write + ahead exactly as the document did.
+TEST(SearchEngine, HyphenatedQueryWordMatchesTheDocument) {
+  const SearchEngine engine = BuildEngine();
+  const std::vector<SearchHit> hits = engine.Search("write-ahead", 5);
+  ASSERT_FALSE(hits.empty()) << "hyphenated words must not be silently dropped";
+  EXPECT_EQ(hits.front().file_id, "wal.md");
+}
+
+// Both parts are required (AND), so a compound whose halves live in different documents matches
+// neither.
+TEST(SearchEngine, HyphenatedQueryRequiresEveryPart) {
+  const SearchEngine engine = BuildEngine();
+  EXPECT_TRUE(engine.Search("hashing-fsync", 5).empty());
+}
+
+// Trailing punctuation is not syntax — this used to be a parse error.
+TEST(SearchEngine, PunctuationInAQueryIsNotASyntaxError) {
+  const SearchEngine engine = BuildEngine();
+  std::string error;
+  const std::vector<SearchHit> hits = engine.Search("fsync()", 5, &error);
+  EXPECT_TRUE(error.empty()) << error;
+  ASSERT_FALSE(hits.empty());
+  EXPECT_EQ(hits.front().file_id, "wal.md");
+}
+
+// Selection and ranking disagree here by design: Evaluate() yields every document lacking the
+// term, but there is no positive term to score, so nothing is returned. See
+// docs/concepts/boolean-phrase-search.md.
+TEST(SearchEngine, BareNotReturnsNothingBecauseThereIsNothingToRank) {
+  const SearchEngine engine = BuildEngine();
+  std::string error;
+  EXPECT_TRUE(engine.Search("NOT hashing", 5, &error).empty());
+  EXPECT_TRUE(error.empty()) << error;
+}
+
 TEST(SearchEngine, UnknownTermsAndStopWordQueriesReturnNothing) {
   const SearchEngine engine = BuildEngine();
   EXPECT_TRUE(engine.Search("kubernetes", 5).empty());

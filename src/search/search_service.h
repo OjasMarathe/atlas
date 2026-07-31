@@ -13,9 +13,6 @@ namespace atlas::search {
 //
 // Lives in its own target (atlas_search_service) so the engine itself stays free of any
 // proto/gRPC dependency and can be unit-tested against a local corpus.
-//
-// Suggest() is intentionally left UNIMPLEMENTED: Trie autocomplete is Phase 3b, and the
-// generated base class already returns the right status for it.
 class SearchServiceImpl final : public atlas::SearchService::Service {
  public:
   grpc::Status IndexDocument(grpc::ServerContext* context,
@@ -24,6 +21,9 @@ class SearchServiceImpl final : public atlas::SearchService::Service {
 
   grpc::Status Search(grpc::ServerContext* context, const atlas::SearchRequest* request,
                       atlas::SearchResponse* response) override;
+
+  grpc::Status Suggest(grpc::ServerContext* context, const atlas::SuggestRequest* request,
+                       atlas::SuggestResponse* response) override;
 
   grpc::Status Stats(grpc::ServerContext* context, const atlas::StatsRequest* request,
                      atlas::ShardStats* response) override;

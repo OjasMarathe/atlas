@@ -19,7 +19,7 @@ TEST(Ranker, IdfIsHighForRareTermsAndNearZeroForUbiquitousOnes) {
   InvertedIndex index;
   for (int i = 0; i < 100; ++i) {
     // "chunk" is in every document; "raft" in only the first.
-    index.AddDocument("doc" + std::to_string(i), i == 0 ? "chunk raft" : "chunk");
+    index.IndexDocument("doc" + std::to_string(i), i == 0 ? "chunk raft" : "chunk");
   }
   const Ranker ranker(index);
   EXPECT_LT(ranker.InverseDocumentFrequency("chunk"), 0.1);
@@ -29,8 +29,8 @@ TEST(Ranker, IdfIsHighForRareTermsAndNearZeroForUbiquitousOnes) {
 // The smoothed ln(1 + ...) form never goes negative, unlike classic BM25 IDF.
 TEST(Ranker, IdfIsNeverNegative) {
   InvertedIndex index;
-  index.AddDocument("a.md", "chunk");
-  index.AddDocument("b.md", "chunk");
+  index.IndexDocument("a.md", "chunk");
+  index.IndexDocument("b.md", "chunk");
   const Ranker ranker(index);
   EXPECT_GE(ranker.InverseDocumentFrequency("chunk"), 0.0);
   EXPECT_GE(ranker.InverseDocumentFrequency("absent"), 0.0);
@@ -40,10 +40,10 @@ TEST(Ranker, IdfIsNeverNegative) {
 // merely accumulates occurrences by being long.
 TEST(Ranker, LengthNormalizationFavoursTheShorterDocument) {
   InvertedIndex index;
-  index.AddDocument("short.md", "chunk replication strategy");
+  index.IndexDocument("short.md", "chunk replication strategy");
   std::string padded = "chunk chunk ";
   for (int i = 0; i < 200; ++i) padded += "filler" + std::to_string(i) + " ";
-  index.AddDocument("long.md", padded);
+  index.IndexDocument("long.md", padded);
 
   const Ranker ranker(index);
   const std::vector<ScoredDocument> hits = ranker.TopK(Terms({"chunk"}), {0, 1}, 10);
@@ -54,10 +54,10 @@ TEST(Ranker, LengthNormalizationFavoursTheShorterDocument) {
 
 TEST(Ranker, TermFrequencySaturates) {
   InvertedIndex index;
-  index.AddDocument("one.md", "chunk filler filler filler filler");
+  index.IndexDocument("one.md", "chunk filler filler filler filler");
   std::string many = "filler";
   for (int i = 0; i < 50; ++i) many += " chunk";
-  index.AddDocument("fifty.md", many);
+  index.IndexDocument("fifty.md", many);
 
   const Ranker ranker(index);
   const std::vector<ScoredDocument> hits = ranker.TopK(Terms({"chunk"}), {0, 1}, 10);
@@ -68,7 +68,7 @@ TEST(Ranker, TermFrequencySaturates) {
 
 TEST(Ranker, TopKTruncatesToTheBestResults) {
   InvertedIndex index;
-  for (int i = 0; i < 10; ++i) index.AddDocument("doc" + std::to_string(i), "chunk");
+  for (int i = 0; i < 10; ++i) index.IndexDocument("doc" + std::to_string(i), "chunk");
   const Ranker ranker(index);
   EXPECT_EQ(ranker.TopK(Terms({"chunk"}), index.AllDocuments(), 3).size(), 3U);
   EXPECT_EQ(ranker.TopK(Terms({"chunk"}), index.AllDocuments(), 100).size(), 10U);
@@ -76,9 +76,9 @@ TEST(Ranker, TopKTruncatesToTheBestResults) {
 
 TEST(Ranker, ResultsAreSortedByDescendingScore) {
   InvertedIndex index;
-  index.AddDocument("a.md", "chunk");
-  index.AddDocument("b.md", "chunk chunk chunk filler filler filler filler filler");
-  index.AddDocument("c.md", "chunk chunk filler");
+  index.IndexDocument("a.md", "chunk");
+  index.IndexDocument("b.md", "chunk chunk chunk filler filler filler filler filler");
+  index.IndexDocument("c.md", "chunk chunk filler");
   const Ranker ranker(index);
   const std::vector<ScoredDocument> hits = ranker.TopK(Terms({"chunk"}), index.AllDocuments(), 10);
   ASSERT_EQ(hits.size(), 3U);
@@ -87,8 +87,8 @@ TEST(Ranker, ResultsAreSortedByDescendingScore) {
 
 TEST(Ranker, MultipleQueryTermsAccumulateScore) {
   InvertedIndex index;
-  index.AddDocument("both.md", "chunk replication");
-  index.AddDocument("one.md", "chunk unrelated");
+  index.IndexDocument("both.md", "chunk replication");
+  index.IndexDocument("one.md", "chunk unrelated");
   const Ranker ranker(index);
   const std::vector<ScoredDocument> hits =
       ranker.TopK(Terms({"chunk", "replic"}), index.AllDocuments(), 10);
@@ -98,7 +98,7 @@ TEST(Ranker, MultipleQueryTermsAccumulateScore) {
 
 TEST(Ranker, EmptyInputsProduceNoHits) {
   InvertedIndex index;
-  index.AddDocument("a.md", "chunk");
+  index.IndexDocument("a.md", "chunk");
   const Ranker ranker(index);
   EXPECT_TRUE(ranker.TopK({}, index.AllDocuments(), 10).empty());
   EXPECT_TRUE(ranker.TopK(Terms({"chunk"}), {}, 10).empty());
@@ -108,8 +108,8 @@ TEST(Ranker, EmptyInputsProduceNoHits) {
 
 TEST(Ranker, OnlyCandidateDocumentsAreScored) {
   InvertedIndex index;
-  index.AddDocument("a.md", "chunk");
-  index.AddDocument("b.md", "chunk");
+  index.IndexDocument("a.md", "chunk");
+  index.IndexDocument("b.md", "chunk");
   const Ranker ranker(index);
   const std::vector<ScoredDocument> hits = ranker.TopK(Terms({"chunk"}), {1}, 10);
   ASSERT_EQ(hits.size(), 1U);

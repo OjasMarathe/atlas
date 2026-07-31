@@ -1,5 +1,6 @@
 #include "search/search_service.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -7,21 +8,37 @@ namespace atlas::search {
 
 namespace {
 constexpr std::uint32_t kDefaultTopK = 10;
+constexpr std::uint32_t kDefaultSuggestions = 10;
 }  // namespace
 
 grpc::Status SearchServiceImpl::IndexDocument(grpc::ServerContext* /*context*/,
                                               const atlas::IndexDocumentRequest* request,
                                               atlas::Status* response) {
+  // One error channel only: gRPC drops the response message when the status is non-OK, so
+  // filling `response` here would be dead code. proto/README prefers gRPC status codes on the
+  // wire, and an empty file_id is squarely a client error.
   if (request->file_id().empty()) {
-    response->set_code(atlas::Status::INTERNAL);
-    response->set_message("file_id is required");
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "file_id is required");
   }
+  // Proto map fields iterate in unspecified order; std::map keeps the stored attributes stable.
+  const std::map<std::string, std::string> fields(request->fields().begin(),
+                                                  request->fields().end());
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    engine_.IndexDocument(request->file_id(), request->text());
+    engine_.IndexDocument(request->file_id(), request->text(), fields);
   }
   response->set_code(atlas::Status::OK);
+  return grpc::Status::OK;
+}
+
+grpc::Status SearchServiceImpl::Suggest(grpc::ServerContext* /*context*/,
+                                        const atlas::SuggestRequest* request,
+                                        atlas::SuggestResponse* response) {
+  const std::uint32_t limit = request->limit() > 0 ? request->limit() : kDefaultSuggestions;
+  const std::lock_guard<std::mutex> lock(mutex_);
+  for (const Completion& completion : engine_.Suggest(request->prefix(), limit)) {
+    response->add_suggestions(completion.word);
+  }
   return grpc::Status::OK;
 }
 

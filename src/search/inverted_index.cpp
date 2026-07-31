@@ -1,17 +1,27 @@
 #include "search/inverted_index.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
+#include "search/posting_codec.h"
 #include "search/text_pipeline.h"
 
 namespace atlas::search {
 
-DocId InvertedIndex::AddDocument(std::string file_id, std::string_view text) {
+DocId InvertedIndex::IndexDocument(std::string file_id, std::string_view text,
+                                   const std::map<std::string, std::string>& fields) {
+  // Re-indexing supersedes: tombstone the old document so its postings stop matching, then
+  // append a fresh one. Rewriting the old postings in place would mean touching every term the
+  // document contained, which is exactly what the append-only layout is designed to avoid.
+  DeleteDocument(file_id);
+
   const std::vector<Term> terms = Analyze(text);
   const auto doc_id = static_cast<DocId>(docs_.size());
-  docs_.push_back(DocumentMeta{std::move(file_id), static_cast<std::uint32_t>(terms.size())});
-  total_length_ += terms.size();
+  docs_.push_back(DocumentMeta{file_id, static_cast<std::uint32_t>(terms.size()), false, fields});
+  by_file_id_[std::move(file_id)] = doc_id;
+  live_length_ += terms.size();
+  ++live_documents_;
 
   // Documents arrive with monotonically increasing doc ids, so appending to each term's list
   // keeps every posting list sorted by doc_id without an explicit sort.
@@ -23,8 +33,65 @@ DocId InvertedIndex::AddDocument(std::string file_id, std::string_view text) {
     Posting& posting = list.back();
     ++posting.term_frequency;
     posting.positions.push_back(term.position);
+    ++vocabulary_[term.surface];
   }
   return doc_id;
+}
+
+bool InvertedIndex::DeleteDocument(std::string_view file_id) {
+  const auto it = by_file_id_.find(file_id);
+  if (it == by_file_id_.end()) return false;
+
+  DocumentMeta& meta = docs_[it->second];
+  meta.deleted = true;
+  live_length_ -= meta.length;
+  --live_documents_;
+  by_file_id_.erase(it);
+  return true;
+}
+
+void InvertedIndex::Compact() {
+  // Work out the renumbering first, and keep an explicit `dropped` snapshot, so rewriting the
+  // posting lists never has to read from docs_ while it's being rebuilt.
+  std::vector<DocId> remap(docs_.size(), 0);
+  std::vector<bool> dropped(docs_.size(), true);
+  DocId next_id = 0;
+  for (std::size_t i = 0; i < docs_.size(); ++i) {
+    if (docs_[i].deleted) continue;
+    dropped[i] = false;
+    remap[i] = next_id++;
+  }
+
+  for (auto it = postings_.begin(); it != postings_.end();) {
+    PostingList kept;
+    kept.reserve(it->second.size());
+    for (Posting& posting : it->second) {
+      if (dropped[posting.doc_id]) continue;
+      posting.doc_id = remap[posting.doc_id];
+      kept.push_back(std::move(posting));
+    }
+    if (kept.empty()) {
+      it = postings_.erase(it);  // every document holding this term is gone
+    } else {
+      it->second = std::move(kept);
+      ++it;
+    }
+  }
+
+  std::vector<DocumentMeta> live;
+  live.reserve(live_documents_);
+  for (std::size_t i = 0; i < docs_.size(); ++i) {
+    if (!dropped[i]) live.push_back(std::move(docs_[i]));
+  }
+  docs_ = std::move(live);
+
+  by_file_id_.clear();
+  for (std::size_t i = 0; i < docs_.size(); ++i) {
+    by_file_id_[docs_[i].file_id] = static_cast<DocId>(i);
+  }
+  // vocabulary_ deliberately keeps words from compacted-away documents: it drives autocomplete
+  // and spell correction, where an occasional stale suggestion costs far less than tracking
+  // per-document surface forms just to decrement counts here.
 }
 
 const PostingList* InvertedIndex::Lookup(std::string_view term) const {
@@ -34,7 +101,16 @@ const PostingList* InvertedIndex::Lookup(std::string_view term) const {
 
 std::size_t InvertedIndex::DocumentFrequency(std::string_view term) const {
   const PostingList* list = Lookup(term);
-  return list == nullptr ? 0 : list->size();
+  if (list == nullptr) return 0;
+  std::size_t live = 0;
+  for (const Posting& posting : *list) {
+    if (IsLive(posting.doc_id)) ++live;
+  }
+  return live;
+}
+
+bool InvertedIndex::IsLive(DocId doc_id) const {
+  return doc_id < docs_.size() && !docs_[doc_id].deleted;
 }
 
 std::uint32_t InvertedIndex::DocumentLength(DocId doc_id) const {
@@ -43,8 +119,8 @@ std::uint32_t InvertedIndex::DocumentLength(DocId doc_id) const {
 }
 
 double InvertedIndex::AverageDocumentLength() const {
-  if (docs_.empty()) return 0.0;
-  return static_cast<double>(total_length_) / static_cast<double>(docs_.size());
+  if (live_documents_ == 0) return 0.0;
+  return static_cast<double>(live_length_) / static_cast<double>(live_documents_);
 }
 
 const std::string& InvertedIndex::FileId(DocId doc_id) const {
@@ -53,9 +129,132 @@ const std::string& InvertedIndex::FileId(DocId doc_id) const {
 }
 
 std::vector<DocId> InvertedIndex::AllDocuments() const {
-  std::vector<DocId> ids(docs_.size());
-  for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<DocId>(i);
+  std::vector<DocId> ids;
+  ids.reserve(live_documents_);
+  for (std::size_t i = 0; i < docs_.size(); ++i) {
+    if (!docs_[i].deleted) ids.push_back(static_cast<DocId>(i));
+  }
   return ids;
+}
+
+std::vector<DocId> InvertedIndex::DocumentsWithField(std::string_view field,
+                                                     std::string_view value) const {
+  std::vector<DocId> ids;
+  for (std::size_t i = 0; i < docs_.size(); ++i) {
+    if (docs_[i].deleted) continue;
+    const auto it = docs_[i].fields.find(std::string(field));
+    if (it != docs_[i].fields.end() && it->second == value) {
+      ids.push_back(static_cast<DocId>(i));  // ascending by construction
+    }
+  }
+  return ids;
+}
+
+std::string InvertedIndex::Serialize() const {
+  std::string out;
+  PutVarint(docs_.size(), &out);
+  for (const DocumentMeta& doc : docs_) {
+    PutVarint(doc.file_id.size(), &out);
+    out += doc.file_id;
+    PutVarint(doc.length, &out);
+    PutVarint(doc.deleted ? 1 : 0, &out);
+    PutVarint(doc.fields.size(), &out);
+    for (const auto& [key, value] : doc.fields) {
+      PutVarint(key.size(), &out);
+      out += key;
+      PutVarint(value.size(), &out);
+      out += value;
+    }
+  }
+
+  PutVarint(postings_.size(), &out);
+  for (const auto& [term, list] : postings_) {
+    PutVarint(term.size(), &out);
+    out += term;
+    const std::string encoded = EncodePostingList(list);
+    PutVarint(encoded.size(), &out);
+    out += encoded;
+  }
+
+  PutVarint(vocabulary_.size(), &out);
+  for (const auto& [word, count] : vocabulary_) {
+    PutVarint(word.size(), &out);
+    out += word;
+    PutVarint(count, &out);
+  }
+  return out;
+}
+
+namespace {
+
+// Reads a varint-length-prefixed string. Returns false if the length runs past the buffer.
+bool GetString(std::string_view in, std::size_t* offset, std::string* out) {
+  std::uint64_t length = 0;
+  if (!GetVarint(in, offset, &length)) return false;
+  if (*offset + length > in.size()) return false;
+  out->assign(in.substr(*offset, length));
+  *offset += length;
+  return true;
+}
+
+}  // namespace
+
+bool InvertedIndex::Load(std::string_view bytes) {
+  InvertedIndex loaded;
+  std::size_t offset = 0;
+
+  std::uint64_t doc_count = 0;
+  if (!GetVarint(bytes, &offset, &doc_count)) return false;
+  for (std::uint64_t i = 0; i < doc_count; ++i) {
+    DocumentMeta meta;
+    std::uint64_t length = 0;
+    std::uint64_t deleted = 0;
+    std::uint64_t field_count = 0;
+    if (!GetString(bytes, &offset, &meta.file_id)) return false;
+    if (!GetVarint(bytes, &offset, &length)) return false;
+    if (!GetVarint(bytes, &offset, &deleted)) return false;
+    if (!GetVarint(bytes, &offset, &field_count)) return false;
+    meta.length = static_cast<std::uint32_t>(length);
+    meta.deleted = deleted != 0;
+    for (std::uint64_t f = 0; f < field_count; ++f) {
+      std::string key;
+      std::string value;
+      if (!GetString(bytes, &offset, &key)) return false;
+      if (!GetString(bytes, &offset, &value)) return false;
+      meta.fields.emplace(std::move(key), std::move(value));
+    }
+    if (!meta.deleted) {
+      loaded.by_file_id_[meta.file_id] = static_cast<DocId>(loaded.docs_.size());
+      loaded.live_length_ += meta.length;
+      ++loaded.live_documents_;
+    }
+    loaded.docs_.push_back(std::move(meta));
+  }
+
+  std::uint64_t term_count = 0;
+  if (!GetVarint(bytes, &offset, &term_count)) return false;
+  for (std::uint64_t i = 0; i < term_count; ++i) {
+    std::string term;
+    std::string encoded;
+    if (!GetString(bytes, &offset, &term)) return false;
+    if (!GetString(bytes, &offset, &encoded)) return false;
+    PostingList list;
+    if (!DecodePostingList(encoded, &list)) return false;
+    loaded.postings_.emplace(std::move(term), std::move(list));
+  }
+
+  std::uint64_t vocabulary_size = 0;
+  if (!GetVarint(bytes, &offset, &vocabulary_size)) return false;
+  for (std::uint64_t i = 0; i < vocabulary_size; ++i) {
+    std::string word;
+    std::uint64_t count = 0;
+    if (!GetString(bytes, &offset, &word)) return false;
+    if (!GetVarint(bytes, &offset, &count)) return false;
+    loaded.vocabulary_.emplace(std::move(word), count);
+  }
+
+  *this = std::move(loaded);  // only commit once the whole buffer parsed cleanly
+  return true;
 }
 
 }  // namespace atlas::search

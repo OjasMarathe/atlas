@@ -23,7 +23,7 @@ Copy an existing one as a template.
 | [0003](0003-dependency-manager-vcpkg.md) | C++ dependency manager: vcpkg | Accepted |
 | [0005](0005-metadata-single-node-m1.md) | Metadata: single node for M1 | Accepted (M1) |
 | [0006](0006-search-index-document-partitioned.md) | Search index: partition by document | Accepted |
-| [0007](0007-inverted-index-format-compression.md) | Inverted-index format & posting-list compression | Proposed |
+| [0007](0007-inverted-index-format-compression.md) | Inverted-index format & posting-list compression | Accepted |
 
 ### Upcoming ADRs to write
 

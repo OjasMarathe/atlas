@@ -1,7 +1,6 @@
 # ADR-0007 — Inverted index on-disk format & posting-list compression
 
-**Status:** Proposed (2026-07-25) — needs joint review before Accepted (see proto/README's
-co-design convention)
+**Status:** Accepted (2026-07-31) — reviewed jointly in PR #4
 
 ## Context
 

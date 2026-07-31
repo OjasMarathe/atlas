@@ -17,8 +17,8 @@ TEST(InvertedIndex, EmptyIndexHasNoStatistics) {
 
 TEST(InvertedIndex, AssignsSequentialDocIdsAndRemembersFileIds) {
   InvertedIndex index;
-  EXPECT_EQ(index.AddDocument("a.md", "chunk replication"), 0U);
-  EXPECT_EQ(index.AddDocument("b.md", "consistent hashing"), 1U);
+  EXPECT_EQ(index.IndexDocument("a.md", "chunk replication"), 0U);
+  EXPECT_EQ(index.IndexDocument("b.md", "consistent hashing"), 1U);
   EXPECT_EQ(index.FileId(0), "a.md");
   EXPECT_EQ(index.FileId(1), "b.md");
   EXPECT_EQ(index.DocumentCount(), 2U);
@@ -27,7 +27,7 @@ TEST(InvertedIndex, AssignsSequentialDocIdsAndRemembersFileIds) {
 TEST(InvertedIndex, StoresTermFrequencyAndPositions) {
   InvertedIndex index;
   // "the" is a stop word, so surviving tokens keep their original positions: chunk@1, chunk@3.
-  index.AddDocument("a.md", "the chunk and chunk");
+  index.IndexDocument("a.md", "the chunk and chunk");
 
   const PostingList* postings = index.Lookup("chunk");
   ASSERT_NE(postings, nullptr);
@@ -39,14 +39,14 @@ TEST(InvertedIndex, StoresTermFrequencyAndPositions) {
 
 TEST(InvertedIndex, IndexesTheStemNotTheSurfaceForm) {
   InvertedIndex index;
-  index.AddDocument("a.md", "replicating chunks");
+  index.IndexDocument("a.md", "replicating chunks");
   EXPECT_EQ(index.Lookup("replicating"), nullptr);
   EXPECT_NE(index.Lookup("replic"), nullptr);  // same stem a query for "replication" produces
 }
 
 TEST(InvertedIndex, PostingListsStaySortedByDocId) {
   InvertedIndex index;
-  for (int i = 0; i < 5; ++i) index.AddDocument("doc" + std::to_string(i), "chunk");
+  for (int i = 0; i < 5; ++i) index.IndexDocument("doc" + std::to_string(i), "chunk");
 
   const PostingList* postings = index.Lookup("chunk");
   ASSERT_NE(postings, nullptr);
@@ -58,8 +58,8 @@ TEST(InvertedIndex, PostingListsStaySortedByDocId) {
 
 TEST(InvertedIndex, TracksDocumentFrequencyAndLengths) {
   InvertedIndex index;
-  index.AddDocument("a.md", "chunk replication");        // 2 terms
-  index.AddDocument("b.md", "chunk chunk chunk chunk");  // 4 terms, one unique
+  index.IndexDocument("a.md", "chunk replication");        // 2 terms
+  index.IndexDocument("b.md", "chunk chunk chunk chunk");  // 4 terms, one unique
   EXPECT_EQ(index.DocumentFrequency("chunk"), 2U);       // appears in both documents
   EXPECT_EQ(index.DocumentFrequency("replic"), 1U);
   EXPECT_EQ(index.DocumentLength(0), 2U);
@@ -69,7 +69,7 @@ TEST(InvertedIndex, TracksDocumentFrequencyAndLengths) {
 
 TEST(InvertedIndex, StopWordOnlyDocumentIsIndexedButContributesNoTerms) {
   InvertedIndex index;
-  index.AddDocument("empty.md", "the and of a to");
+  index.IndexDocument("empty.md", "the and of a to");
   EXPECT_EQ(index.DocumentCount(), 1U);
   EXPECT_EQ(index.UniqueTerms(), 0U);
   EXPECT_EQ(index.DocumentLength(0), 0U);
@@ -77,15 +77,15 @@ TEST(InvertedIndex, StopWordOnlyDocumentIsIndexedButContributesNoTerms) {
 
 TEST(InvertedIndex, AllDocumentsIsAscending) {
   InvertedIndex index;
-  index.AddDocument("a.md", "one");
-  index.AddDocument("b.md", "two");
-  index.AddDocument("c.md", "three");
+  index.IndexDocument("a.md", "one");
+  index.IndexDocument("b.md", "two");
+  index.IndexDocument("c.md", "three");
   EXPECT_EQ(index.AllDocuments(), (std::vector<DocId>{0, 1, 2}));
 }
 
 TEST(InvertedIndex, RejectsOutOfRangeDocIds) {
   InvertedIndex index;
-  index.AddDocument("a.md", "chunk");
+  index.IndexDocument("a.md", "chunk");
   EXPECT_THROW((void)index.DocumentLength(7), std::out_of_range);
   EXPECT_THROW((void)index.FileId(7), std::out_of_range);
 }

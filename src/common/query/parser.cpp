@@ -7,11 +7,12 @@
 namespace atlas::query {
 namespace {
 
-enum class TokenKind { Term, And, Or, Not, LParen, RParen };
+enum class TokenKind { Term, And, Or, Not, LParen, RParen, Phrase, Field };
 
 struct Token {
   TokenKind kind;
-  std::string text;  // Term only
+  std::string text;   // Term/Phrase: the words. Field: the value.
+  std::string field;  // Field only
 };
 
 // Operators are UPPERCASE keywords, matched here — before any analysis — so that a lowercase
@@ -26,16 +27,39 @@ TokenKind ClassifyWord(const std::string& word) {
 std::vector<Token> Lex(std::string_view query) {
   std::vector<Token> tokens;
   std::string current;
+
   const auto flush = [&] {
     if (current.empty()) return;
     const TokenKind kind = ClassifyWord(current);
-    tokens.push_back(Token{kind, kind == TokenKind::Term ? current : std::string{}});
+    if (kind != TokenKind::Term) {
+      tokens.push_back(Token{kind, {}, {}});
+      current.clear();
+      return;
+    }
+    // "author:ojas" is a field filter; a bare colon or an empty side is just an odd word.
+    const std::size_t colon = current.find(':');
+    if (colon != std::string::npos && colon > 0 && colon + 1 < current.size()) {
+      tokens.push_back(
+          Token{TokenKind::Field, current.substr(colon + 1), current.substr(0, colon)});
+    } else {
+      tokens.push_back(Token{TokenKind::Term, current, {}});
+    }
     current.clear();
   };
-  for (const char ch : query) {
-    if (ch == '(' || ch == ')') {
+
+  for (std::size_t i = 0; i < query.size(); ++i) {
+    const char ch = query[i];
+    if (ch == '"') {
       flush();
-      tokens.push_back(Token{ch == '(' ? TokenKind::LParen : TokenKind::RParen, {}});
+      // Everything up to the closing quote is one phrase token; an unterminated quote simply
+      // runs to the end of the query rather than failing.
+      const std::size_t close = query.find('"', i + 1);
+      const std::size_t end = close == std::string_view::npos ? query.size() : close;
+      tokens.push_back(Token{TokenKind::Phrase, std::string(query.substr(i + 1, end - i - 1)), {}});
+      i = end;
+    } else if (ch == '(' || ch == ')') {
+      flush();
+      tokens.push_back(Token{ch == '(' ? TokenKind::LParen : TokenKind::RParen, {}, {}});
     } else if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
       flush();
     } else {
@@ -113,6 +137,48 @@ class Parser {
     return Combine(Node::Kind::And, std::move(children));
   }
 
+  // A quoted phrase becomes a Phrase node whose children carry their offset *within the phrase*,
+  // counting words that analyze away. Document positions are recorded pre-filter, so keeping the
+  // gaps here is what stops "chunk ring" from matching "chunk of the ring".
+  std::unique_ptr<Node> ParsePhrase(const std::string& text) {
+    std::vector<std::unique_ptr<Node>> parts;
+    std::uint32_t offset = 0;
+    std::string word;
+    const auto take = [&] {
+      if (word.empty()) return;
+      std::vector<std::string> analyzed;
+      if (options_.analyze_term) {
+        analyzed = options_.analyze_term(word);
+      } else {
+        analyzed.push_back(word);
+      }
+      for (std::string& term : analyzed) {
+        auto node = Node::MakeTerm(std::move(term));
+        node->phrase_offset = offset++;
+        parts.push_back(std::move(node));
+      }
+      // A word that analyzed away (a stop word) still consumed a slot in the document's token
+      // stream, so advance past it.
+      if (analyzed.empty()) ++offset;
+      word.clear();
+    };
+    for (const char ch : text) {
+      if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
+        take();
+      } else {
+        word.push_back(ch);
+      }
+    }
+    take();
+
+    if (parts.empty()) return nullptr;  // phrase was entirely stop words
+    if (parts.size() == 1) {
+      parts.front()->phrase_offset = 0;
+      return std::move(parts.front());  // a one-word phrase is just a term
+    }
+    return Node::Make(Node::Kind::Phrase, std::move(parts));
+  }
+
   std::unique_ptr<Node> ParseUnary() {
     if (!error_.empty()) return nullptr;
     if (pos_ >= tokens_.size()) {
@@ -134,6 +200,12 @@ class Parser {
       }
       case TokenKind::LParen: {
         ++pos_;
+        // An empty group is punctuation, not a query: someone searching "fsync()" wants fsync,
+        // not a syntax error. Drop it the same way a stop word is dropped.
+        if (Peek(TokenKind::RParen)) {
+          ++pos_;
+          return nullptr;
+        }
         std::unique_ptr<Node> inner = ParseExpression();
         if (!error_.empty()) return nullptr;
         if (!Peek(TokenKind::RParen)) {
@@ -145,10 +217,30 @@ class Parser {
       }
       case TokenKind::Term: {
         ++pos_;
-        std::string analyzed =
-            options_.analyze_term ? options_.analyze_term(token.text) : token.text;
+        std::vector<std::string> analyzed;
+        if (options_.analyze_term) {
+          analyzed = options_.analyze_term(token.text);
+        } else {
+          analyzed.emplace_back(token.text);
+        }
         if (analyzed.empty()) return nullptr;  // stop word
-        return Node::MakeTerm(std::move(analyzed));
+        if (analyzed.size() == 1) return Node::MakeTerm(std::move(analyzed.front()));
+
+        // One word that analyzes into several index terms ("write-ahead" -> write, ahead). The
+        // document indexed them adjacently, so the precise query is a phrase — AND is the
+        // closest 3a approximation until positional phrase matching lands in 3b.
+        std::vector<std::unique_ptr<Node>> parts;
+        parts.reserve(analyzed.size());
+        for (std::string& term : analyzed) parts.push_back(Node::MakeTerm(std::move(term)));
+        return Node::Make(Node::Kind::And, std::move(parts));
+      }
+      case TokenKind::Phrase: {
+        ++pos_;
+        return ParsePhrase(token.text);
+      }
+      case TokenKind::Field: {
+        ++pos_;
+        return Node::MakeField(token.field, token.text);
       }
       case TokenKind::RParen:
         error_ = "unexpected ')'";
@@ -172,8 +264,11 @@ void CollectPositiveTerms(const Node* node, std::vector<std::string>& out,
       return;
     case Node::Kind::Not:
       return;  // excluded terms must not contribute to the relevance score
+    case Node::Kind::Field:
+      return;  // filters select documents, they don't rank them
     case Node::Kind::And:
     case Node::Kind::Or:
+    case Node::Kind::Phrase:
       for (const auto& child : node->children) CollectPositiveTerms(child.get(), out, seen);
       return;
   }
@@ -185,6 +280,14 @@ std::unique_ptr<Node> Node::MakeTerm(std::string text) {
   auto node = std::make_unique<Node>();
   node->kind = Kind::Term;
   node->term = std::move(text);
+  return node;
+}
+
+std::unique_ptr<Node> Node::MakeField(std::string field, std::string value) {
+  auto node = std::make_unique<Node>();
+  node->kind = Kind::Field;
+  node->field = std::move(field);
+  node->term = std::move(value);
   return node;
 }
 

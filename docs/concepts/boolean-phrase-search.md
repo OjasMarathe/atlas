@@ -139,11 +139,22 @@ std::vector<DocId> Intersect(const std::vector<DocId>& a, const std::vector<DocI
 - **`NOT` under an implicit OR is a footgun.** `chunk NOT search` parses as
   `chunk OR (NOT search)` — the union with "everything lacking *search*" swallows the exclusion.
   The user almost always means `chunk AND NOT search`. Our demo tool calls this out explicitly.
-- **A bare `NOT` query** returns every document that lacks the term, all with score 0 — there is
-  no positive term to rank on. Some engines reject a purely negative query outright.
+- **A bare `NOT` query returns nothing.** `Evaluate` does produce every document lacking the
+  term, but `PositiveTerms` is empty (negated subtrees are skipped), so the ranker has nothing to
+  score on and returns no hits. Returning an unranked dump of "everything except X" would be
+  worse than returning nothing, so this is deliberate — but it means selection and ranking
+  disagree about the result set, which is worth knowing. Some engines reject a purely negative
+  query outright instead.
 - **Stop words in boolean clauses vanish.** `chunk AND the` degrades to `chunk`, because the
   clause analyzed away. We drop the empty clause rather than fail, and a clause left with a
   single survivor is unwrapped rather than kept as a one-child operator node.
+- **One query word can become several terms.** `write-ahead` tokenizes to `write` + `ahead`,
+  just as the document did, and the parser ANDs them — the closest approximation of the phrase
+  query that 3b will answer properly. Dropping such words instead (an earlier bug) made every
+  hyphenated term silently unsearchable.
+- **Punctuation must not look like syntax.** `(` and `)` are grouping tokens, so `fsync()` once
+  parsed as an empty group and *errored*. An empty group is now dropped like a stop word, since
+  a search box should tolerate punctuation rather than reject it.
 - **Empty and malformed queries are different things.** An all-stop-word query is *valid* and
   returns nothing; `(chunk AND` is a parse error and reports one.
 - **Duplicate ids would break everything.** Every operation assumes sorted, duplicate-free

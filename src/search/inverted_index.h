@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -33,42 +34,70 @@ using PostingList = std::vector<Posting>;
 
 // A shard-local inverted index: term -> the documents containing it.
 //
-// In-memory for M1. Persisting it to RocksDB with delta+varint compressed posting lists is
-// ADR-0007's decision and lands with Phase 3b.
+// Updates are incremental: re-indexing a file_id supersedes its previous document, and deletes
+// tombstone it. Postings for superseded documents linger until Compact() — the same
+// deleted-docs-bitmap + merge approach Lucene uses, because posting lists are append-optimized
+// and (once delta-encoded, ADR-0007) order-dependent. See concepts/incremental-indexing.md.
 class InvertedIndex {
  public:
-  // Analyzes `text` and indexes it. Returns the assigned DocId. Re-indexing a file_id that is
-  // already present replaces nothing — see the incremental-indexing gap noted in ADR-0007.
-  DocId AddDocument(std::string file_id, std::string_view text);
+  // Indexes `text` under `file_id`, superseding any previous document with that id. `fields`
+  // are exact-match attributes for filtering (author/type/lang/...); values are matched
+  // verbatim, not analyzed. Returns the new DocId.
+  DocId IndexDocument(std::string file_id, std::string_view text,
+                      const std::map<std::string, std::string>& fields = {});
 
-  // Null when the term is absent from this shard.
+  // Tombstones the document. Returns false if the file_id isn't indexed.
+  bool DeleteDocument(std::string_view file_id);
+
+  // Physically drops tombstoned documents' postings and renumbers DocIds. Invalidates every
+  // previously returned DocId.
+  void Compact();
+
+  // Null when the term is absent. May contain postings for deleted documents — callers that
+  // need live-only results must filter with IsLive().
   const PostingList* Lookup(std::string_view term) const;
 
-  // n(t): how many documents contain the term. 0 if absent.
+  // n(t) counting live documents only, so BM25's IDF isn't skewed by tombstones.
   std::size_t DocumentFrequency(std::string_view term) const;
 
-  std::size_t DocumentCount() const { return docs_.size(); }
+  bool IsLive(DocId doc_id) const;
+
+  std::size_t DocumentCount() const { return live_documents_; }
   std::size_t UniqueTerms() const { return postings_.size(); }
 
-  // |D| in tokens (post stop-word removal), and the corpus average used by BM25's length
-  // normalization. AverageDocumentLength() is 0 for an empty index.
   std::uint32_t DocumentLength(DocId doc_id) const;
   double AverageDocumentLength() const;
 
   const std::string& FileId(DocId doc_id) const;
 
-  // All doc ids in ascending order — the universe a NOT clause complements.
+  // Live doc ids in ascending order — the universe a NOT clause complements.
   std::vector<DocId> AllDocuments() const;
+
+  // Live documents carrying `value` for `field`, ascending. Empty when unknown.
+  std::vector<DocId> DocumentsWithField(std::string_view field, std::string_view value) const;
+
+  // Every distinct surface form seen, with how many times it occurred — the vocabulary that
+  // feeds autocomplete and spell correction.
+  const std::unordered_map<std::string, std::uint64_t>& Vocabulary() const { return vocabulary_; }
+
+  // Delta+varint encoded snapshot of the whole index (ADR-0007). Round-trips through Load().
+  std::string Serialize() const;
+  bool Load(std::string_view bytes);
 
  private:
   struct DocumentMeta {
     std::string file_id;
     std::uint32_t length;
+    bool deleted;
+    std::map<std::string, std::string> fields;
   };
 
   std::unordered_map<std::string, PostingList, TermHash, std::equal_to<>> postings_;
   std::vector<DocumentMeta> docs_;
-  std::uint64_t total_length_ = 0;
+  std::unordered_map<std::string, DocId, TermHash, std::equal_to<>> by_file_id_;
+  std::unordered_map<std::string, std::uint64_t> vocabulary_;
+  std::uint64_t live_length_ = 0;
+  std::size_t live_documents_ = 0;
 };
 
 }  // namespace atlas::search

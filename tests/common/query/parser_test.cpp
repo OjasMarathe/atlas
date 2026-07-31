@@ -13,9 +13,10 @@ namespace {
 Options WithTestAnalyzer(Node::Kind implicit = Node::Kind::Or) {
   Options options;
   options.implicit_operator = implicit;
-  options.analyze_term = [](std::string_view word) -> std::string {
-    if (word == "the" || word == "a") return {};  // dropped, like a stop word
-    return std::string(word);
+  options.analyze_term = [](std::string_view word) -> std::vector<std::string> {
+    if (word == "the" || word == "a") return {};           // dropped, like a stop word
+    if (word == "write-ahead") return {"write", "ahead"};  // one word -> several index terms
+    return {std::string(word)};
   };
   return options;
 }
@@ -103,6 +104,28 @@ TEST(Parser, EmptyQueryIsNotAnError) {
   const Result result = Parse("   ", WithTestAnalyzer());
   EXPECT_TRUE(result.ok());
   EXPECT_EQ(result.root, nullptr);
+}
+
+// A hyphenated word analyzes into several index terms; they're ANDed, approximating the phrase
+// query that Phase 3b will answer with positions.
+TEST(Parser, WordAnalyzingToSeveralTermsBecomesAnAnd) {
+  const Result result = Parse("write-ahead", WithTestAnalyzer());
+  ASSERT_TRUE(result.ok()) << result.error;
+  ASSERT_NE(result.root, nullptr);
+  EXPECT_EQ(result.root->kind, Node::Kind::And);
+  ASSERT_EQ(result.root->children.size(), 2U);
+  EXPECT_EQ(result.root->children[0]->term, "write");
+  EXPECT_EQ(result.root->children[1]->term, "ahead");
+  EXPECT_EQ(PositiveTerms(result.root.get()), (std::vector<std::string>{"write", "ahead"}));
+}
+
+// Punctuation must not be mistaken for syntax: "fsync()" is a search for fsync, not an error.
+TEST(Parser, EmptyParenthesesAreDroppedNotAnError) {
+  const Result result = Parse("fsync()", WithTestAnalyzer());
+  ASSERT_TRUE(result.ok()) << result.error;
+  ASSERT_NE(result.root, nullptr);
+  EXPECT_EQ(result.root->kind, Node::Kind::Term);
+  EXPECT_EQ(result.root->term, "fsync");
 }
 
 TEST(Parser, MalformedQueriesReportErrors) {
