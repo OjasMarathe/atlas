@@ -79,7 +79,9 @@ gaps too.
 
 - **Where it lives:** `src/search/posting_codec.{h,cpp}` — `PutVarint`/`GetVarint` and
   `EncodePostingList`/`DecodePostingList`. `InvertedIndex::Serialize()`/`Load()` build the
-  whole-index snapshot on top.
+  whole-index snapshot on top, and `src/search/index_store.{h,cpp}` persists it to RocksDB in
+  two column families (postings keyed by term, metadata under one key), written as a single
+  atomic batch.
 - **Decisions from [ADR-0007](../architecture/adr/0007-inverted-index-format-compression.md):**
   delta+varint over roaring bitmaps (a bitmap stores presence only, so BM25's term frequencies
   and phrase positions would need a parallel structure) and over PForDelta (better ratio,

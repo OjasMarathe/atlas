@@ -141,6 +141,11 @@ add_library(atlas_search STATIC
 target_include_directories(atlas_search PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(atlas_search PUBLIC atlas_query)
 
+# RocksDB persistence for the index (ADR-0007). Separate target so atlas_search stays free of a
+# storage-engine dependency and keeps building/testing purely in memory.
+add_library(atlas_search_store STATIC src/search/index_store.cpp)
+target_link_libraries(atlas_search_store PUBLIC atlas_search RocksDB::rocksdb)
+
 # The gRPC adapter is a separate target so atlas_search itself stays proto-free.
 add_library(atlas_search_service STATIC src/search/search_service.cpp)
 target_link_libraries(atlas_search_service PUBLIC atlas_search atlas_proto gRPC::grpc++)
@@ -238,8 +243,15 @@ add_executable(atlas_search_tests
   tests/search/posting_codec_test.cpp
   tests/search/incremental_index_test.cpp
   tests/search/phrase_filter_test.cpp
+  tests/search/snippet_test.cpp
   tests/common/query/parser_test.cpp
 )
 # gtest_main pulls in gtest transitively; naming both makes the linker warn about duplicates.
 target_link_libraries(atlas_search_tests PRIVATE atlas_search GTest::gtest_main)
+
+# Persistence tests need RocksDB, so they live in their own binary and keep atlas_search_tests
+# dependency-light.
+add_executable(atlas_index_store_tests tests/search/index_store_test.cpp)
+target_link_libraries(atlas_index_store_tests PRIVATE atlas_search_store GTest::gtest_main)
+add_test(NAME atlas_index_store_tests COMMAND atlas_index_store_tests)
 add_test(NAME atlas_search_tests COMMAND atlas_search_tests)

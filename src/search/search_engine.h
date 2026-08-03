@@ -18,6 +18,7 @@ namespace atlas::search {
 struct SearchHit {
   std::string file_id;
   double score;
+  std::string snippet;  // a window of the document around the first matching term
 };
 
 struct ShardStatistics {
@@ -35,7 +36,12 @@ class SearchEngine {
   DocId IndexDocument(std::string file_id, std::string_view text,
                       const std::map<std::string, std::string>& fields = {});
 
+  // Tombstones the document. Compacts automatically once tombstones exceed
+  // kCompactionThreshold of the index, so a long-lived shard doesn't grow without bound.
   bool DeleteDocument(std::string_view file_id);
+
+  // Fraction of tombstoned documents that triggers an automatic compaction on delete.
+  static constexpr double kCompactionThreshold = 0.3;
 
   // Drops tombstoned documents' postings. Rebuilds the suggestion structures with it.
   void Compact();
@@ -64,11 +70,20 @@ class SearchEngine {
   // Documents where the phrase's terms appear at consecutive positions.
   std::vector<DocId> EvaluatePhrase(const query::Node* node) const;
 
+  // A window of the document's text around its first occurrence of any query term.
+  std::string BuildSnippet(DocId doc_id, const std::vector<std::string>& terms) const;
+
   void RebuildSuggesters();
 
+  // Deleting changes the vocabulary, so the trie and BK-tree go stale. Rebuilding them on every
+  // delete would be wasteful, so we mark them dirty and rebuild lazily on the next suggestion —
+  // mutable because that repair is invisible to callers of the const query methods.
+  void EnsureSuggestersFresh() const;
+
   InvertedIndex index_;
-  Trie completions_;
-  BkTree vocabulary_;
+  mutable Trie completions_;
+  mutable BkTree vocabulary_;
+  mutable bool suggesters_dirty_ = false;
 };
 
 }  // namespace atlas::search
