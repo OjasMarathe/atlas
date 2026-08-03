@@ -1,10 +1,14 @@
-# A real Atlas cluster: one metadata (control-plane) node + four storage nodes.
+# A real Atlas cluster: one metadata (control-plane) node, four storage+search nodes, and one
+# query coordinator.
 #
 #   docker compose up --build
 #
 # The metadata node probes the storage nodes and re-replicates under-replicated chunks
-# automatically. Storage nodes register themselves into the ring on startup.
+# automatically. Storage nodes register themselves into the ring on startup, advertising both
+# STORAGE and SEARCH — each serves a chunk store and its own search shard on one port.
 # Try it:  docker compose exec metadata atlas nodes
+#          docker compose exec metadata atlas put notes.md /etc/hostname
+#          docker compose exec coordinator atlas search "hashing ring"
 #          docker compose stop node2      # watch the metadata logs heal the cluster
 services:
   metadata:
@@ -15,10 +19,26 @@ services:
       ATLAS_NODE_ID: metadata
       ATLAS_LISTEN: 0.0.0.0:50050
       ATLAS_METADATA: metadata:50050 # so the bundled CLI works inside this container
+      ATLAS_COORDINATOR: coordinator:50060 # ...including `atlas search`
       ATLAS_HEAL_INTERVAL_MS: "2000"
       ATLAS_FAILURE_THRESHOLD: "2"
     ports:
       - "50050:50050"
+
+  coordinator:
+    build: .
+    image: atlas-node
+    environment:
+      ATLAS_ROLE: coordinator
+      ATLAS_NODE_ID: coordinator
+      ATLAS_LISTEN: 0.0.0.0:50060
+      ATLAS_METADATA: metadata:50050 # discovers SEARCH shards from the ring
+      ATLAS_COORDINATOR: coordinator:50060 # so the bundled CLI works inside this container
+      ATLAS_CACHE_POLICY: lru # or lfu — see docs/concepts/lru-lfu-cache.md
+      ATLAS_CACHE_CAPACITY: "256"
+    ports:
+      - "50060:50060"
+    depends_on: [metadata]
 
   node1:
     build: .

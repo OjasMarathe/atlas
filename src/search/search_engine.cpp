@@ -171,7 +171,8 @@ std::vector<DocId> SearchEngine::Evaluate(const query::Node* node) const {
 }
 
 std::vector<SearchHit> SearchEngine::Search(std::string_view query, std::size_t top_k,
-                                            std::string* error) const {
+                                            std::string* error,
+                                            const GlobalStatistics* global) const {
   if (error != nullptr) error->clear();
 
   query::Options options;
@@ -201,7 +202,7 @@ std::vector<SearchHit> SearchEngine::Search(std::string_view query, std::size_t 
     return filtered;
   }
 
-  const Ranker ranker(index_);
+  const Ranker ranker(index_, global);
   const std::vector<ScoredDocument> ranked = ranker.TopK(terms, candidates, top_k);
 
   std::vector<SearchHit> hits;
@@ -230,6 +231,24 @@ std::vector<Suggestion> SearchEngine::DidYouMean(std::string_view word,
   // words, so just drop the exact-match case defensively.
   std::erase_if(found, [&](const Suggestion& s) { return s.distance == 0; });
   return found;
+}
+
+std::vector<std::string> SearchEngine::QueryTerms(std::string_view query) {
+  query::Options options;
+  options.analyze_term = AnalyzeQueryTerm;
+  const query::Result parsed = query::Parse(query, options);
+  if (!parsed.ok() || parsed.root == nullptr) return {};
+  return query::PositiveTerms(parsed.root.get());
+}
+
+std::unordered_map<std::string, std::size_t> SearchEngine::TermFrequencies(
+    const std::vector<std::string>& terms) const {
+  std::unordered_map<std::string, std::size_t> frequencies;
+  frequencies.reserve(terms.size());
+  // Report a 0 for terms this shard has never seen rather than omitting them: the coordinator
+  // sums these, and a missing entry is indistinguishable from a shard that failed to answer.
+  for (const std::string& term : terms) frequencies[term] = index_.DocumentFrequency(term);
+  return frequencies;
 }
 
 ShardStatistics SearchEngine::Stats() const {

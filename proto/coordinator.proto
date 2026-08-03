@@ -9,12 +9,14 @@ import "search.proto";   // reuses ScoredDoc
 // and caches (LRU/LFU, Phase 4). See docs/architecture/system-architecture.md (read path).
 service CoordinatorService {
   rpc Query(QueryRequest) returns (QueryResponse);
+  rpc CacheStats(CacheStatsRequest) returns (CacheStatsResponse);  // Phase 4: LRU vs LFU
 }
 
 message QueryRequest {
   string query = 1;
   uint32 top_k = 2;
   string user = 3;              // for ACL enforcement (Phase 7)
+  bool bypass_cache = 4;        // force a fan-out; used to measure cold vs warm
 }
 
 message QueryResponse {
@@ -22,4 +24,16 @@ message QueryResponse {
   uint32 shards_queried = 2;
   uint32 shards_responded = 3;  // < shards_queried signals partial results under node failure
   double latency_ms = 4;
+  bool cache_hit = 5;           // served from the result cache without touching a shard
+}
+
+message CacheStatsRequest {}
+
+message CacheStatsResponse {
+  uint64 hits = 1;
+  uint64 misses = 2;
+  uint64 evictions = 3;
+  uint64 size = 4;
+  uint64 capacity = 5;
+  string policy = 6;            // "lru" or "lfu"
 }

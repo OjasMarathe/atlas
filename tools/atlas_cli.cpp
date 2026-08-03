@@ -1,14 +1,19 @@
 // atlas — command-line client for a running Atlas cluster.
 //
-//   atlas put  <file_id> <path>        upload a file
-//   atlas get  <file_id> [out_path]    download it (stdout if no path)
-//   atlas info <file_id>               show chunks and which nodes hold them
-//   atlas nodes                        show cluster membership
+//   atlas put    <file_id> <path>        upload a file (and index it for search)
+//   atlas get    <file_id> [out_path]    download it (stdout if no path)
+//   atlas info   <file_id>               show chunks and which nodes hold them
+//   atlas nodes                          show cluster membership
+//   atlas search <query> [top_k]         ranked search across every shard (Phase 4)
+//   atlas shards                         per-shard index sizes
+//   atlas cache                          coordinator result-cache hit ratio
 //
-// Env: ATLAS_METADATA (default 127.0.0.1:50050)
+// Env: ATLAS_METADATA (default 127.0.0.1:50050) · ATLAS_COORDINATOR (default 127.0.0.1:50060)
 
 #include <grpcpp/grpcpp.h>
 
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -19,7 +24,9 @@
 #include <vector>
 
 #include "client/client.h"
+#include "coordinator.grpc.pb.h"
 #include "metadata.grpc.pb.h"
+#include "search.grpc.pb.h"
 
 namespace {
 
@@ -28,12 +35,20 @@ std::string MetadataAddress() {
   return (v != nullptr && *v != '\0') ? std::string(v) : std::string("127.0.0.1:50050");
 }
 
+std::string CoordinatorAddress() {
+  const char* v = std::getenv("ATLAS_COORDINATOR");
+  return (v != nullptr && *v != '\0') ? std::string(v) : std::string("127.0.0.1:50060");
+}
+
 int Usage() {
   std::cerr << "usage:\n"
-            << "  atlas put  <file_id> <path>\n"
-            << "  atlas get  <file_id> [out_path]\n"
-            << "  atlas info <file_id>\n"
-            << "  atlas nodes\n";
+            << "  atlas put    <file_id> <path>\n"
+            << "  atlas get    <file_id> [out_path]\n"
+            << "  atlas info   <file_id>\n"
+            << "  atlas nodes\n"
+            << "  atlas search <query> [top_k]\n"
+            << "  atlas shards\n"
+            << "  atlas cache\n";
   return 2;
 }
 
@@ -55,7 +70,8 @@ int Put(const std::string& file_id, const std::string& path) {
     return 1;
   }
   std::cout << "uploaded " << file_id << " (" << data.size() << " bytes, " << result.chunks
-            << " chunk(s), replicated 3x)\n";
+            << " chunk(s), replicated 3x"
+            << (result.indexed ? ", indexed for search" : ", not indexed") << ")\n";
   return 0;
 }
 
@@ -124,6 +140,105 @@ int Nodes() {
   return 0;
 }
 
+// Per-shard index sizes, straight from each SEARCH member's Stats RPC. This is what makes
+// document partitioning visible: the counts should add up to the corpus, not repeat it.
+int Shards() {
+  auto stub = MetadataStub();
+  grpc::ClientContext ctx;
+  atlas::GetRingRequest request;
+  atlas::RingState state;
+  if (!stub->GetRing(&ctx, request, &state).ok()) {
+    std::cerr << "cannot reach metadata at " << MetadataAddress() << "\n";
+    return 1;
+  }
+
+  std::uint64_t total = 0;
+  int shard_count = 0;
+  for (const atlas::NodeInfo& node : state.nodes()) {
+    bool is_shard = false;
+    for (const int role : node.roles()) {
+      if (role == atlas::SEARCH) is_shard = true;
+    }
+    if (!is_shard) continue;
+    ++shard_count;
+
+    auto search = atlas::SearchService::NewStub(
+        grpc::CreateChannel(node.address(), grpc::InsecureChannelCredentials()));
+    grpc::ClientContext shard_ctx;
+    shard_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+    atlas::StatsRequest stats_request;
+    atlas::ShardStats stats;
+    if (!search->Stats(&shard_ctx, stats_request, &stats).ok()) {
+      std::cout << "  " << node.node_id() << "  " << node.address() << "  unreachable\n";
+      continue;
+    }
+    total += stats.doc_count();
+    std::cout << "  " << node.node_id() << "  " << node.address() << "  " << stats.doc_count()
+              << " doc(s), " << stats.unique_terms() << " term(s), avgdl " << std::fixed
+              << std::setprecision(1) << stats.avg_doc_len() << "\n";
+  }
+  std::cout << shard_count << " shard(s), " << total << " document(s) indexed in total\n";
+  return 0;
+}
+
+std::unique_ptr<atlas::CoordinatorService::Stub> CoordinatorStub() {
+  return atlas::CoordinatorService::NewStub(
+      grpc::CreateChannel(CoordinatorAddress(), grpc::InsecureChannelCredentials()));
+}
+
+int Search(const std::string& query, std::uint32_t top_k) {
+  auto stub = CoordinatorStub();
+  grpc::ClientContext ctx;
+  atlas::QueryRequest request;
+  request.set_query(query);
+  request.set_top_k(top_k);
+  atlas::QueryResponse response;
+  const grpc::Status status = stub->Query(&ctx, request, &response);
+  if (!status.ok()) {
+    std::cerr << "query failed: " << status.error_message() << " (coordinator at "
+              << CoordinatorAddress() << ")\n";
+    return 1;
+  }
+
+  std::cout << response.hits_size() << " hit(s) in " << std::fixed << std::setprecision(2)
+            << response.latency_ms() << " ms across " << response.shards_responded() << "/"
+            << response.shards_queried() << " shard(s)"
+            << (response.cache_hit() ? "  [cache hit]" : "") << "\n";
+  // A shard that missed its deadline is dropped, not retried — say so, because the result is
+  // then a subset of the corpus and a caller may care.
+  if (response.shards_responded() < response.shards_queried()) {
+    std::cout << "  warning: partial results — "
+              << (response.shards_queried() - response.shards_responded())
+              << " shard(s) did not answer\n";
+  }
+  int rank = 1;
+  for (const atlas::ScoredDoc& hit : response.hits()) {
+    std::cout << "  " << rank++ << ". " << hit.file_id() << "  (" << std::setprecision(4)
+              << hit.score() << ")\n";
+    if (!hit.snippet().empty()) std::cout << "     " << hit.snippet() << "\n";
+  }
+  return 0;
+}
+
+int CacheInfo() {
+  auto stub = CoordinatorStub();
+  grpc::ClientContext ctx;
+  atlas::CacheStatsRequest request;
+  atlas::CacheStatsResponse response;
+  if (!stub->CacheStats(&ctx, request, &response).ok()) {
+    std::cerr << "cannot reach coordinator at " << CoordinatorAddress() << "\n";
+    return 1;
+  }
+  const std::uint64_t total = response.hits() + response.misses();
+  const double ratio =
+      total == 0 ? 0.0 : 100.0 * static_cast<double>(response.hits()) / static_cast<double>(total);
+  std::cout << response.policy() << " cache: " << response.size() << "/" << response.capacity()
+            << " entries, " << response.hits() << " hit(s), " << response.misses() << " miss(es), "
+            << response.evictions() << " eviction(s), " << std::fixed << std::setprecision(1)
+            << ratio << "% hit ratio\n";
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -137,5 +252,12 @@ int main(int argc, char** argv) {
   }
   if (command == "info" && args.size() == 2) return Info(args[1]);
   if (command == "nodes" && args.size() == 1) return Nodes();
+  if (command == "search" && (args.size() == 2 || args.size() == 3)) {
+    const std::uint32_t top_k =
+        args.size() == 3 ? static_cast<std::uint32_t>(std::atoi(args[2].c_str())) : 10;
+    return Search(args[1], top_k);
+  }
+  if (command == "shards" && args.size() == 1) return Shards();
+  if (command == "cache" && args.size() == 1) return CacheInfo();
   return Usage();
 }

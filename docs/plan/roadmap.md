@@ -92,11 +92,22 @@ Make search itself distributed.
 - **Coordinator** splits a query, **scatter-gathers** across search shards, **merges** and
   sorts to return top-K.
 - **Caching** — implement **LRU** and **LFU**, compare hit ratios; optional Redis comparison.
-- **Connection pool + thread pool + async networking** (Boost.Asio) for concurrency.
+- **Connection pool + thread pool + async networking** for concurrency. *Built on gRPC's
+  `CompletionQueue` rather than Boost.Asio — Atlas has no sockets gRPC doesn't already own, so
+  Asio would have been a second event loop shadowing the first
+  ([ADR-0011](../architecture/adr/0011-async-model-grpc-completion-queue.md)).*
 
 **DoD:** query hits ≥3 shards in parallel, results merged correctly, warm cache measurably
-faster; sustains N concurrent clients in a load test.
+faster; sustains N concurrent clients in a load test. — **met** (`coordinator_test`,
+`phase4_e2e_test`, `scripts/demo-distributed-search.sh`).
 **Concepts owed:** [scatter-gather], [lru-lfu-cache], [thread-pool], [connection-pool], [async-io].
+— all written.
+
+*Also landed here, because the DoD is unverifiable without it:* the **ingestion → index bridge**.
+Before Phase 4 nothing in a running cluster ever called `IndexDocument`, so every shard was empty
+and a distributed query would have correctly merged four empty result sets. `atlas put` now
+indexes the document on its owning shard, and storage nodes advertise `Role::SEARCH` so the
+coordinator can find them.
 
 ---
 

@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "common/query/parser.h"
@@ -43,8 +44,21 @@ class SearchEngine {
   // Parses the query (boolean operators, "quoted phrases", field:value filters), selects
   // matching documents, then ranks them with BM25. `error` receives a parse error when the
   // query is malformed, in which case the result is empty.
+  //
+  // `global`, when supplied by the Phase 4 coordinator, replaces this shard's collection
+  // statistics so scores are comparable with other shards' (ADR-0010).
   std::vector<SearchHit> Search(std::string_view query, std::size_t top_k,
-                                std::string* error = nullptr) const;
+                                std::string* error = nullptr,
+                                const GlobalStatistics* global = nullptr) const;
+
+  // Analyzed query terms and this shard's n(t) for each — round 1 of a DFS query. Terms the
+  // shard has never seen report 0, which is information the coordinator needs.
+  std::unordered_map<std::string, std::size_t> TermFrequencies(
+      const std::vector<std::string>& terms) const;
+
+  // The analyzed positive terms of `query`, so the coordinator can ask every shard about the
+  // same term set without duplicating the analyzer.
+  static std::vector<std::string> QueryTerms(std::string_view query);
 
   // Autocomplete: indexed words starting with `prefix`, most frequent first.
   std::vector<Completion> Suggest(std::string_view prefix, std::size_t limit) const;
