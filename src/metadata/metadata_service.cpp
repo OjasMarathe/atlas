@@ -14,14 +14,15 @@ grpc::Status MetadataServiceImpl::RegisterFile(grpc::ServerContext* /*context*/,
   meta.set_replication_factor(request->replication_factor());
   meta.set_sha256(request->sha256());
 
-  const std::lock_guard<std::mutex> lock(mutex_);
+  // No mutex_ here: mutex_ guards the ring/membership, and MetadataStore is itself thread-safe
+  // (it has to be — the maintenance loop's healer writes to it without going through this
+  // service at all).
   *response = store_->RegisterFile(std::move(meta));  // assigns version + timestamps
   return grpc::Status::OK;
 }
 
 grpc::Status MetadataServiceImpl::GetFile(grpc::ServerContext* /*context*/,
                                           const GetFileRequest* request, FileMetadata* response) {
-  const std::lock_guard<std::mutex> lock(mutex_);
   if (!store_->GetFile(request->file_id(), request->version(), response)) {
     return grpc::Status(grpc::StatusCode::NOT_FOUND, "no such file or version");
   }
@@ -31,7 +32,6 @@ grpc::Status MetadataServiceImpl::GetFile(grpc::ServerContext* /*context*/,
 grpc::Status MetadataServiceImpl::ListVersions(grpc::ServerContext* /*context*/,
                                                const ListVersionsRequest* request,
                                                ListVersionsResponse* response) {
-  const std::lock_guard<std::mutex> lock(mutex_);
   for (const FileMetadata& version : store_->ListVersions(request->file_id())) {
     *response->add_versions() = version;
   }
@@ -66,6 +66,13 @@ grpc::Status MetadataServiceImpl::UpdateMembership(grpc::ServerContext* /*contex
   ++ring_version_;
   FillRingState(response);
   return grpc::Status::OK;
+}
+
+RingState MetadataServiceImpl::SnapshotRing() const {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  RingState state;
+  FillRingState(&state);
+  return state;
 }
 
 grpc::Status MetadataServiceImpl::ReportFailure(grpc::ServerContext* /*context*/,

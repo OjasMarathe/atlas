@@ -25,10 +25,10 @@ Copy an existing one as a template.
 | [0005](0005-metadata-single-node-m1.md) | Metadata: single node for M1 | Accepted (M1) |
 | [0006](0006-search-index-document-partitioned.md) | Search index: partition by document | Accepted |
 | [0007](0007-inverted-index-format-compression.md) | Inverted-index format & posting-list compression | Accepted |
+| [0009](0009-failure-detection-and-healing.md) | Failure detection & self-healing model | Accepted |
 
 ### Upcoming ADRs to write
 
 - **0008** — Query-parsing location: coordinator vs. search shard — *Phase 3* (candidate, see
-  ADR-0007's carried-forward open question).
-- **0009** — Failure detection & self-healing model — *Phase 2* (written on the fault-tolerance
-  branch; skipped 0008 to leave it for the search track).
+  ADR-0007's carried-forward open question). Phase 2 skipped to 0009 to leave 0008 for the
+  search track.

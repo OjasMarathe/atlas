@@ -35,11 +35,15 @@ class MetadataServiceImpl final : public MetadataService::Service {
   grpc::Status ReportFailure(grpc::ServerContext* context, const FailureReport* request,
                              Status* response) override;
 
+  // Thread-safe snapshot of current membership. The maintenance loop runs outside the RPC
+  // threads, so it needs a consistent view without reaching into the guarded state itself.
+  RingState SnapshotRing() const;
+
  private:
   void FillRingState(RingState* out) const;  // caller must hold mutex_
 
-  MetadataStore* store_;
-  mutable std::mutex mutex_;  // serializes the store + ring (single-threaded control plane for M1)
+  MetadataStore* store_;      // thread-safe on its own; not guarded by mutex_
+  mutable std::mutex mutex_;  // guards the ring + membership below
   HashRing ring_;
   int vnodes_;
   std::uint64_t ring_version_ = 0;

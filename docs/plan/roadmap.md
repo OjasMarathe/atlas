@@ -64,7 +64,11 @@ Make it survive death.
 
 **DoD:** kill a node during traffic → no data loss, cluster detects it within the timeout,
 re-replicates to full factor, and search/read keep working.
-**Concepts owed:** [heartbeat-failure-detection], [replica-promotion], [self-healing], [raft] (if attempted).
+**Concepts owed:** [heartbeat-failure-detection], [self-healing], [raft] (if attempted).
+*[replica-promotion] turned out to be degenerate in Atlas — chunks are immutable and
+content-addressed, so no replica owns writes and there is nothing to promote. Recorded inside
+[self-healing] and [ADR-0009](../architecture/adr/0009-failure-detection-and-healing.md) rather
+than as its own note.*
 
 ## Phase 3 — Search Engine `M1`
 

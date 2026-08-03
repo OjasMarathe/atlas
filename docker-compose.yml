@@ -1,29 +1,59 @@
-# Phase 0: a 3-node local cluster. Each node serves StorageService.Heartbeat and pings the
-# other two every few seconds. `docker compose up --build` and watch the heartbeat logs.
-# The image is built once and reused by all three services.
+# A real Atlas cluster: one metadata (control-plane) node + four storage nodes.
+#
+#   docker compose up --build
+#
+# The metadata node probes the storage nodes and re-replicates under-replicated chunks
+# automatically. Storage nodes register themselves into the ring on startup.
+# Try it:  docker compose exec metadata atlas nodes
+#          docker compose stop node2      # watch the metadata logs heal the cluster
 services:
-  node1:
+  metadata:
     build: .
     image: atlas-node
     environment:
+      ATLAS_ROLE: metadata
+      ATLAS_NODE_ID: metadata
+      ATLAS_LISTEN: 0.0.0.0:50050
+      ATLAS_METADATA: metadata:50050 # so the bundled CLI works inside this container
+      ATLAS_HEAL_INTERVAL_MS: "2000"
+      ATLAS_FAILURE_THRESHOLD: "2"
+    ports:
+      - "50050:50050"
+
+  node1:
+    build: .
+    image: atlas-node
+    environment: &storage_env
+      ATLAS_ROLE: storage
       ATLAS_NODE_ID: node1
       ATLAS_LISTEN: 0.0.0.0:50051
-      ATLAS_PEERS: node2:50051,node3:50051
-    ports:
-      - "50051:50051"
+      ATLAS_ADVERTISE: node1:50051 # what peers dial; 0.0.0.0 is not routable
+      ATLAS_METADATA: metadata:50050
+    depends_on: [metadata]
 
   node2:
     build: .
     image: atlas-node
     environment:
+      <<: *storage_env
       ATLAS_NODE_ID: node2
-      ATLAS_LISTEN: 0.0.0.0:50051
-      ATLAS_PEERS: node1:50051,node3:50051
+      ATLAS_ADVERTISE: node2:50051
+    depends_on: [metadata]
 
   node3:
     build: .
     image: atlas-node
     environment:
+      <<: *storage_env
       ATLAS_NODE_ID: node3
-      ATLAS_LISTEN: 0.0.0.0:50051
-      ATLAS_PEERS: node1:50051,node2:50051
+      ATLAS_ADVERTISE: node3:50051
+    depends_on: [metadata]
+
+  node4:
+    build: .
+    image: atlas-node
+    environment:
+      <<: *storage_env
+      ATLAS_NODE_ID: node4
+      ATLAS_ADVERTISE: node4:50051
+    depends_on: [metadata]
