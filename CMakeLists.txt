@@ -9,6 +9,17 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Serialize linking (Ninja job pool). Every executable here statically links gRPC + protobuf +
+# RocksDB, and a Debug link of one of those peaks well over a gigabyte. Ninja otherwise runs
+# `cores + 2` links at once, which is what OOM-killed the CI runner once the Phase 2 and Phase 3
+# targets landed in the same tree (14 executables). Compilation stays fully parallel — this
+# throttles the link step only, and costs a few seconds locally.
+set(ATLAS_LINK_JOBS "1" CACHE STRING "Concurrent link jobs (Ninja only); raise if you have RAM")
+if(CMAKE_GENERATOR MATCHES "Ninja")
+  set_property(GLOBAL PROPERTY JOB_POOLS atlas_link=${ATLAS_LINK_JOBS})
+  set(CMAKE_JOB_POOL_LINK atlas_link)
+endif()
+
 # Sanitizers (ADR-0001 mitigation). Opt-in, and selectable — because AddressSanitizer hangs in
 # dyld's initializers before main() on macOS 26 / Apple clang 17 (reproducible with an empty
 # main), so a macOS dev needs UBSan without ASan:
@@ -83,6 +94,11 @@ target_link_libraries(atlas_storage PUBLIC atlas_common RocksDB::rocksdb)
 add_library(atlas_storage_svc STATIC src/storage/storage_service.cpp)
 target_link_libraries(atlas_storage_svc PUBLIC atlas_storage atlas_proto gRPC::grpc++)
 
+# Chunk streaming over StorageService, shared by the ingestion client and the healer.
+add_library(atlas_chunk_transfer STATIC src/storage/chunk_transfer.cpp)
+target_include_directories(atlas_chunk_transfer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(atlas_chunk_transfer PUBLIC atlas_proto gRPC::grpc++)
+
 add_library(atlas_metadata STATIC src/metadata/metadata_store.cpp)
 target_include_directories(atlas_metadata PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(atlas_metadata PUBLIC atlas_proto RocksDB::rocksdb)
@@ -90,9 +106,19 @@ target_link_libraries(atlas_metadata PUBLIC atlas_proto RocksDB::rocksdb)
 add_library(atlas_metadata_svc STATIC src/metadata/metadata_service.cpp)
 target_link_libraries(atlas_metadata_svc PUBLIC atlas_metadata atlas_common gRPC::grpc++)
 
+# ---- Phase 2: cluster health (failure detection) + self-healing ----
+add_library(atlas_cluster STATIC
+  src/cluster/health_tracker.cpp
+  src/cluster/prober.cpp
+  src/cluster/healer.cpp
+  src/cluster/maintenance.cpp
+)
+target_link_libraries(atlas_cluster
+  PUBLIC atlas_common atlas_proto atlas_metadata atlas_chunk_transfer gRPC::grpc++)
+
 # ---- ingestion / read client: chunk -> replicate via ring -> register; read-around on download ----
 add_library(atlas_client STATIC src/client/client.cpp)
-target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_proto gRPC::grpc++)
+target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_chunk_transfer atlas_proto gRPC::grpc++)
 
 # =========================== Phase 3: search engine ===========================
 
@@ -126,12 +152,19 @@ target_link_libraries(atlas_search_service PUBLIC atlas_search atlas_proto gRPC:
 
 # ============================== executables ==============================
 
-# One node serves both roles: a storage node (Phase 1) and this shard's search service (Phase 3).
+# One binary, two roles (ATLAS_ROLE=storage|metadata). A storage node also serves this shard's
+# search service (Phase 3); a metadata node runs the control plane + the maintenance loop.
 add_executable(atlas_node src/node/main.cpp)
-# atlas_storage_svc / atlas_search_service already propagate atlas_proto and gRPC::grpc++
-# publicly; naming them again here makes the linker warn about duplicates.
+# atlas_storage_svc / atlas_search_service / atlas_cluster already propagate atlas_proto and
+# gRPC::grpc++ publicly; naming them again here makes the linker warn about duplicates.
 target_link_libraries(atlas_node PRIVATE atlas_storage_svc atlas_search_service
+                                         atlas_metadata_svc atlas_cluster
                                          gRPC::grpc++_reflection)
+
+# ---- atlas: command-line client (put / get / info / nodes) ----
+add_executable(atlas_cli tools/atlas_cli.cpp)
+set_target_properties(atlas_cli PROPERTIES OUTPUT_NAME atlas)
+target_link_libraries(atlas_cli PRIVATE atlas_client gRPC::grpc++)
 
 # ---- Phase 3 demo: index a corpus, run ranked queries, print timings ----
 add_executable(atlas_search_demo tools/search_demo.cpp)
@@ -169,6 +202,27 @@ add_test(NAME metadata_store_test COMMAND metadata_store_test)
 add_executable(metadata_service_test tests/metadata_service_test.cpp)
 target_link_libraries(metadata_service_test PRIVATE atlas_metadata_svc gRPC::grpc++)
 add_test(NAME metadata_service_test COMMAND metadata_service_test)
+
+add_executable(health_tracker_test tests/health_tracker_test.cpp)
+target_link_libraries(health_tracker_test PRIVATE atlas_cluster atlas_storage_svc gRPC::grpc++)
+add_test(NAME health_tracker_test COMMAND health_tracker_test)
+
+# Node-join migration: adding a node moves only its share (the Phase 1 DoD's last clause).
+add_executable(rebalance_test tests/rebalance_test.cpp)
+target_link_libraries(rebalance_test
+  PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME rebalance_test COMMAND rebalance_test)
+
+add_executable(maintenance_test tests/maintenance_test.cpp)
+target_link_libraries(maintenance_test
+  PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME maintenance_test COMMAND maintenance_test)
+
+# Phase 2 headline: kill a node, watch the cluster restore the replication factor.
+add_executable(self_healing_test tests/self_healing_test.cpp)
+target_link_libraries(self_healing_test
+  PRIVATE atlas_cluster atlas_client atlas_storage_svc atlas_metadata_svc gRPC::grpc++)
+add_test(NAME self_healing_test COMMAND self_healing_test)
 
 # End-to-end Milestone-1 test: metadata + storage nodes + the ingestion client, all in-process.
 add_executable(phase1_e2e_test tests/phase1_e2e_test.cpp)

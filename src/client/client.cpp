@@ -8,60 +8,9 @@
 #include "common/hash_ring.h"
 #include "common/sha256.h"
 #include "dfs/chunking.h"
+#include "storage/chunk_transfer.h"  // shared streaming helpers (also used by the Phase 2 healer)
 
 namespace atlas {
-namespace {
-
-// Client-streamed PutChunk: one header frame then <=1 MiB data frames. Returns true only if the
-// node durably stored the chunk (its own checksum check passed).
-bool PutChunkToNode(StorageService::Stub* stub, const std::string& chunk_id,
-                    const std::string& data) {
-  grpc::ClientContext ctx;
-  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
-  PutChunkResponse response;
-  std::unique_ptr<grpc::ClientWriter<ChunkFrame>> writer(stub->PutChunk(&ctx, &response));
-
-  ChunkFrame header;
-  header.mutable_header()->set_chunk_id(chunk_id);
-  header.mutable_header()->set_size(data.size());
-  if (!writer->Write(header)) {
-    writer->Finish();
-    return false;
-  }
-  constexpr std::size_t kFrame = 1u << 20;
-  for (std::size_t off = 0; off < data.size(); off += kFrame) {
-    ChunkFrame frame;
-    frame.set_data(data.substr(off, std::min(kFrame, data.size() - off)));
-    if (!writer->Write(frame)) {
-      writer->Finish();
-      return false;
-    }
-  }
-  writer->WritesDone();
-  return writer->Finish().ok() && response.status().code() == Status::OK;
-}
-
-// Server-streamed GetChunk: drain the frames into `out`. The node verifies the checksum and
-// returns a non-OK status on corruption/absence, so a false return means "try another replica".
-bool GetChunkFromNode(StorageService::Stub* stub, const std::string& chunk_id, std::string* out) {
-  grpc::ClientContext ctx;
-  ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
-  GetChunkRequest request;
-  request.set_chunk_id(chunk_id);
-  request.set_verify_checksum(true);
-  std::unique_ptr<grpc::ClientReader<ChunkFrame>> reader(stub->GetChunk(&ctx, request));
-
-  std::string data;
-  ChunkFrame frame;
-  while (reader->Read(&frame)) {
-    if (frame.has_data()) data += frame.data();
-  }
-  if (!reader->Finish().ok()) return false;
-  *out = std::move(data);
-  return true;
-}
-
-}  // namespace
 
 AtlasClient::AtlasClient(const std::string& metadata_address, std::size_t chunk_size)
     : metadata_(MetadataService::NewStub(
@@ -119,7 +68,7 @@ UploadResult AtlasClient::Upload(const std::string& file_id, const std::string& 
     // intended vs actual — and that difference is exactly what it must repair.
     int acks = 0;
     for (const NodeId& node : replicas) {
-      if (PutChunkToNode(StorageAt(address[node]), chunk.id, chunk.data)) {
+      if (PutChunk(StorageAt(address[node]), chunk.id, chunk.data)) {
         placement->add_node_ids(node);
         ++acks;
       }
@@ -159,7 +108,7 @@ DownloadResult AtlasClient::Download(const std::string& file_id, std::uint64_t v
     for (const std::string& node : placement.node_ids()) {
       const auto it = address.find(node);
       if (it == address.end()) continue;  // node left the cluster
-      if (GetChunkFromNode(StorageAt(it->second), placement.chunk().chunk_id(), &bytes)) {
+      if (GetChunk(StorageAt(it->second), placement.chunk().chunk_id(), &bytes)) {
         got = true;
         break;  // read-around: first healthy replica wins
       }

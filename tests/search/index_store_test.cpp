@@ -159,4 +159,59 @@ TEST(IndexStore, SavingTwiceOverwritesRatherThanAccumulates) {
   EXPECT_EQ(loaded.DocumentCount(), 2U);
 }
 
+// Saving twice into the same store must leave the second snapshot, not a union of both. Compact()
+// drops posting lists whose documents are all gone; if a re-save doesn't remove those keys, Load()
+// resurrects them — and after Compact() renumbered the doc ids, their postings point at whichever
+// documents now occupy those slots, so a query returns the wrong files.
+TEST(IndexStore, ResavingDropsTermsThatNoLongerExist) {
+  const TempDir dir("resave");
+  IndexStore store(dir.path());
+  ASSERT_TRUE(store.ok());
+
+  InvertedIndex index;
+  index.IndexDocument("keep.md", "chunk replication");
+  index.IndexDocument("gone.md", "zebra");  // "zebra" lives only in the doomed document
+  ASSERT_TRUE(store.Save(index));
+
+  index.DeleteDocument("gone.md");
+  index.Compact();  // removes the now-empty "zebra" posting list
+  ASSERT_EQ(index.Lookup("zebra"), nullptr);
+  ASSERT_TRUE(store.Save(index));
+
+  InvertedIndex loaded;
+  ASSERT_TRUE(store.Load(&loaded));
+  EXPECT_EQ(loaded.DocumentCount(), 1U);
+  EXPECT_EQ(loaded.Lookup("zebra"), nullptr) << "a term dropped by Compact() must not come back";
+}
+
+// The damaging form of the same bug: when the compacted-away document sat in the middle, its doc
+// ids get reused by other documents, so a resurrected posting list points at a *live* file that
+// never contained the term.
+TEST(IndexStore, ResurrectedPostingsDoNotPointAtTheWrongDocument) {
+  const TempDir dir("resave_midlist");
+  IndexStore store(dir.path());
+  ASSERT_TRUE(store.ok());
+
+  InvertedIndex index;
+  index.IndexDocument("alpha.md", "alpha");
+  index.IndexDocument("gone.md", "zebra");  // doc id 1
+  index.IndexDocument("gamma.md", "gamma");
+  index.IndexDocument("delta.md", "delta");
+  ASSERT_TRUE(store.Save(index));
+
+  index.DeleteDocument("gone.md");
+  index.Compact();  // gamma.md slides into doc id 1
+  ASSERT_TRUE(store.Save(index));
+
+  InvertedIndex loaded;
+  ASSERT_TRUE(store.Load(&loaded));
+  ASSERT_EQ(loaded.DocumentCount(), 3U);
+  const PostingList* zebra = loaded.Lookup("zebra");
+  if (zebra != nullptr && !zebra->empty()) {
+    const DocId doc_id = zebra->front().doc_id;
+    ADD_FAILURE() << "\"zebra\" resurrected and now points at " << loaded.FileId(doc_id)
+                  << ", which never contained it";
+  }
+}
+
 }  // namespace atlas::search

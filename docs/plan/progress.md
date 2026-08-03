@@ -9,6 +9,80 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-08
 
+- **2026-08-01** — [Phase 2] **PR #7 merged with `main` (now Phase 0+1+3) and reviewed.** 13/13
+  test targets green, clang-format clean.
+  - **Conflicts resolved:** `CMakeLists.txt` (one `atlas_node` links both tracks — storage +
+    search shard *and* metadata service + maintenance, since `ATLAS_ROLE` picks the role at
+    runtime); `src/node/main.cpp` (body auto-merged; header comment rewritten for both roles —
+    `ATLAS_PEERS` is gone, the Phase-0 peer ping is superseded by the real prober); the ADR index
+    (each side listed the other's ADR as "upcoming" — now 0007 *and* 0009 are indexed, only 0008
+    outstanding, plus a duplicated 0004 row dropped); `README.md`; `progress.md`.
+  - **Review fix — a real lost-update race.** Phase 2 gave the metadata node a *second* writer:
+    the maintenance loop's healer holds a raw `MetadataStore*` and never goes through
+    `MetadataService`, so the service's mutex protected nothing against it. `AddChunkLocation`,
+    `RemoveChunkLocation` and `RegisterFile`'s holder merge are all read-modify-write on the same
+    `c/<chunk_id>` key, and RocksDB's per-operation atomicity does not make a RMW atomic. A
+    re-upload racing a repair could drop a holder from the index — leaving a replica that exists
+    on disk invisible to readers *and* to the healer, which would then re-copy the bytes every
+    round forever. `MetadataStore` is now internally thread-safe (`std::shared_mutex`; shared for
+    reads, exclusive for the RMW paths), and the service's mutex was narrowed to the
+    ring/membership it actually owns. Same fix closes a second hole: concurrent `RegisterFile`s
+    for one file could both pick the same next version.
+  - **Review fix — `docker compose up --build` was broken.** `CMakeLists` declares
+    `tools/search_demo.cpp` and `tools/atlas_cli.cpp`, but the Dockerfile never copied `tools/`,
+    and CMake validates every declared source path at configure time. CI never caught it because
+    CI doesn't build the image. Also, `docker-compose.yml` documents
+    `docker compose exec metadata atlas nodes`, but the `atlas` CLI was never built into or
+    installed in the image — both fixed.
+  - **Review fix — `HealthTracker::Forget` had a unit test and no caller.** A node that left the
+    ring while failing kept its failure count forever (nothing probes it, so nothing can reset
+    it), so `DeadNodes()` reported a cleanly-departed node as permanently down and the map grew
+    without bound. Added `Retain(members)`, called once per maintenance round, + a test.
+  - `scripts/run-cluster-local.sh` still set the removed `ATLAS_PEERS` and started no metadata
+    node, so nothing registered into the ring — rewritten for the role model (1 metadata + 3
+    self-registering storage). — Harshal
+
+- **2026-08-01** — [Phase 2] **Node-join migration — Phases 1 and 2 are now DoD-complete.** 12/12
+  tests green.
+  - **`Healer::RebalanceOnce`** — the other half of placement maintenance. Repair reacts to
+    *missing* copies; a node join creates none (every chunk still has R live holders), so the
+    newcomer would stay empty forever. Rebalance reacts to *misplacement*: the ring wants this
+    chunk somewhere it isn't. Runs after repair in the maintenance loop, so durability always
+    precedes tidiness.
+  - **Safety rules, deliberately:** copy-then-evict (never open a durability hole for a placement
+    preference), skip already-degraded chunks entirely, and evict only holders outside the ideal
+    set so the count lands back at exactly R.
+  - **`rebalance_test` proves the roadmap's Phase-1 DoD clause** — "adding a node migrates only its
+    share" — at the *data* level, not just the ring level: 5→6 nodes, 40 chunks,
+    **`21/120 replicas moved (17.5%)`** vs the ideal 1/6 ≈ 16.7%. Every move landed on the newcomer
+    (zero churn between existing nodes), every chunk kept exactly 3 holders throughout, and the file
+    downloaded byte-identical afterwards. `hash % N` placement would have moved nearly all 120.
+  - `RunOnce()` now returns `MaintenanceReport{heal, rebalance}`; added `DeleteChunk` to
+    `chunk_transfer`. Concept note: **chunk-migration**.
+  - **Remaining (optional):** GC of surplus chunks, repair/migration rate limiting, Raft (stretch).
+    — Ojas
+
+- **2026-08-01** — [Phase 2] **Atlas is now a runnable, self-healing cluster** (not just a test
+  harness). 11/11 tests green.
+  - **Node roles** — `ATLAS_ROLE=storage|metadata` in one binary. Storage nodes **self-register**
+    into the ring at startup (retrying, since the control plane may still be coming up), advertising
+    `ATLAS_ADVERTISE` because `0.0.0.0` isn't routable from a peer.
+  - **Maintenance loop** (`src/cluster/maintenance`) — the metadata node now probes + heals on a
+    timer by itself; `RunOnce()` stays synchronous so tests drive a round directly. Logs liveness
+    *transitions* only, so a steady dead node isn't reprinted every round. Needed
+    `MetadataServiceImpl::SnapshotRing()` for a consistent membership view off the RPC threads.
+  - **`atlas` CLI** — `put` / `get` / `info` / `nodes`. `info` prints each chunk's holders, which is
+    what makes healing visible from the outside.
+  - **`docker-compose.yml`** rewritten: 1 metadata + 4 storage, auto-registering. Closes the
+    "runnable demo" gap Harshal raised in the PR #5 review.
+  - **`scripts/demo-self-healing.sh`** — real 5-process demo: upload → `kill -9` a holder →
+    `[metadata] nodes down: node2` → `healed 1 replica(s)` → placement shows a fresh holder →
+    download verified byte-identical. **Ran it; it works.**
+  - **`maintenance_test`** covers the loop in CI (the demo script isn't run there): one round with
+    `failure_threshold=1` both detects the death and restores the factor, and converges after.
+  - **Still open:** node-join chunk migration (Phase 1 DoD leftover), GC of surplus chunks, Raft
+    (stretch). — Ojas
+
 - **2026-08-01** — [Phase 3] **PR #4 merged with `main` (Phase 0+1) and reviewed.** `main` had moved
   on (Phase 1 landed first), so the search branch carried the conflicts:
   - **Conflicts resolved:** `src/node/main.cpp` — one node now registers **both** `StorageService`
@@ -83,6 +157,30 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
     decremented on delete, so a stale suggestion is possible; `ScoredDoc.snippet` is still empty
     (needs byte offsets from the tokenizer); the index is still in memory — RocksDB persistence
     is the remaining half of ADR-0007. — Harshal
+
+- **2026-07-29** — [Phase 2] **Self-healing works — the cluster restores its own replication factor.**
+  Branch `phase-2/fault-tolerance` off the merged `main`. Three slices, 10/10 tests green:
+  - **Failure detection** (`src/cluster/health_tracker`, `src/cluster/prober`) — **pull-based**: the
+    control plane probes each node via the existing `StorageService.Heartbeat`, declaring death only
+    after N *consecutive* misses (one success revives). No proto change. `ProbeOnce()` is
+    synchronous so tests assert exactly when a node is declared dead instead of sleeping.
+  - **Live chunk-location index** (`c/<chunk_id>` in the metadata store) — mutable holder set kept
+    out of the immutable version blobs and written in the same atomic batch; `GetFile` serves it, so
+    readers see healed placements with **zero client change**. Also extracted
+    `src/storage/chunk_transfer` so client + healer share one streaming implementation.
+  - **Healer** (`src/cluster/healer`) — `RepairOnce` finds chunks below R live holders, pulls from a
+    survivor, pushes onto a fresh ring-chosen live node, records it. Idempotent/convergent.
+  - **`self_healing_test`**: upload → kill a holder → 2 missed probes → dead → exactly 1 repair onto
+    a node outside the original three (verified it really serves the bytes) → back to 3 live holders
+    → second pass is a no-op → file still downloads.
+  - Notes: heartbeat-failure-detection, self-healing (+ why **replica promotion is degenerate** in
+    Atlas: immutable chunks have no write-owning primary). **ADR-0009** records the Phase 2 model
+    (0008 left reserved for the search track's query-parsing ADR).
+  - Fixed a now-wrong e2e assertion: re-uploading identical bytes hits the same chunk id, so the
+    location index rightly still lists a dead node as a holder (its bytes are unreachable, not
+    gone) — the partial-write regression test now targets a *fresh* chunk mapped onto the dead node.
+  - **Still open in Phase 2:** node-join chunk migration (the Phase 1 DoD leftover), wiring the
+    probe/heal loop into `atlas_node`, GC of surplus/dead chunks, Raft (stretch). — Ojas
 
 - **2026-07-29** — [Phase 1] **Review fixes (PR #5, Harshal).** Two real defects found and fixed:
   (1) `MetadataStore::RegisterFile` wrote the version blob and the `latest` pointer as two separate

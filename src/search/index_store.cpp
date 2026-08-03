@@ -4,6 +4,7 @@
 #include <rocksdb/options.h>
 #include <rocksdb/write_batch.h>
 
+#include <unordered_set>
 #include <vector>
 
 #include "search/posting_codec.h"
@@ -50,9 +51,24 @@ bool IndexStore::Save(const InvertedIndex& index) {
 
   rocksdb::WriteBatch batch;
   batch.Put(meta_, kMetaKey, index.SerializeMetadata());
+
+  std::unordered_set<std::string> live_terms;
   index.ForEachPostingList([&](const std::string& term, const PostingList& postings) {
+    live_terms.insert(term);
     batch.Put(postings_, term, EncodePostingList(postings));
   });
+
+  // A save is a whole snapshot, so terms that disappeared since the last one have to go too.
+  // Compact() drops posting lists whose documents are all deleted; leaving their keys behind
+  // means Load() resurrects them, and since Compact() also renumbers doc ids those stale
+  // postings point at whichever documents now occupy the vacated slots — a query silently
+  // returning files that never contained the term.
+  std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(), postings_));
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    const std::string term = it->key().ToString();
+    if (live_terms.count(term) == 0) batch.Delete(postings_, term);
+  }
+  if (!it->status().ok()) return false;
 
   // One atomic batch: the document table and the posting lists describe each other, so a
   // partially applied save would be a corrupt index rather than an older one.

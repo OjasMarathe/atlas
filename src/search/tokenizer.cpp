@@ -5,11 +5,12 @@
 namespace atlas::search {
 
 std::vector<std::string> Tokenize(std::string_view text) {
+  std::vector<LocatedToken> located = TokenizeWithOffsets(text);
   std::vector<std::string> tokens;
-  tokens.reserve(text.size() / 8);  // rough guess: ~8 bytes per token including delimiters
-  for (const LocatedToken& token : TokenizeWithOffsets(text)) {
-    tokens.push_back(token.text);
-  }
+  tokens.reserve(located.size());
+  // Move, don't copy: this runs over every document at index time and every term at query time,
+  // so an extra string copy per token is the last thing this path needs.
+  for (LocatedToken& token : located) tokens.push_back(std::move(token.text));
   return tokens;
 }
 
