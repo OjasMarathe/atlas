@@ -9,6 +9,57 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 
 ## 2026-08
 
+- **2026-08-03** — [Phase 4] **Distributed query engine — Milestone 1 is complete.** Branch
+  `phase-4/query-coordinator` off `main` (now Phases 0-3). **17 test targets green**, also under
+  `-DATLAS_SANITIZE=undefined`.
+  - **First, the gap that had to be closed:** nothing in a running cluster had *ever* called
+    `IndexDocument` — the shards were empty, so a distributed query would have correctly merged
+    four empty result sets and proved nothing. `AtlasClient::Upload` now indexes the document
+    after the metadata commit (never failing the upload on it — the bytes are already durable),
+    on the shard that owns its first chunk, so exactly one shard holds each document per
+    ADR-0006. Storage nodes advertise **`Role::SEARCH`** as well as `STORAGE`, which is how the
+    coordinator discovers them. Binary payloads are stored but not indexed.
+  - **Coordinator** (`src/coordinator/`) — scatter-gather over gRPC's `CompletionQueue`: one
+    thread issues an RPC to every shard, collects them as they land, merges, dedupes by
+    `file_id`, sorts with a deterministic tie-break, truncates to K. Each shard is asked for a
+    full K, not K/n — the global winners may all live on one shard. Shard discovery is injected
+    (`ShardSnapshot`), mirroring `ClusterMaintenance`, so the fan-out is testable with no control
+    plane.
+  - **Global BM25 statistics — ADR-0010.** Shard-local IDF means the same document scores
+    differently depending on where the ring put it. The coordinator now runs a **two-round DFS**:
+    collect `N`, `n(t)`, `avgdl` from every shard (avgdl recombined *weighted by document count*,
+    not a mean of means), sum, replay the query with them. `coordinator_test` indexes one
+    deliberately-skewed corpus **twice** — split across 4 shards and into a single engine — and
+    asserts the distributed ranking matches the single-index ranking to **1e-9**, while asserting
+    that shard-local scoring *does* diverge. That second assertion is the one that stops this
+    being correctness theatre. Additive `search.proto` changes: `TermStats` RPC, `GlobalStats`.
+  - **LRU + LFU** (`src/common/cache/`), both O(1) including eviction — LFU via frequency buckets
+    with the `min_frequency` invariant, ties broken by recency. Swappable at runtime
+    (`ATLAS_CACHE_POLICY`). Measured on identical skewed traffic: **LRU 47.1%, LFU 70.5%**.
+    A second case pins the *cyclic-scan pathology* — 12 keys cycling through an 8-entry cache
+    gives **exactly 0%** for both, the cache being pure overhead. Found that one by writing a
+    workload test whose premise was wrong; kept it, because it is the more interesting result.
+  - **Thread pool + connection pool** (`src/common/pool/`) — written from scratch and tested,
+    but used honestly: gRPC's sync server already pools threads, so ours drives the load test and
+    owned parallel work, *not* RPC serving. The fan-out deliberately uses neither, because
+    blocking N pool threads on network waits is the thing async I/O exists to avoid.
+  - **Boost.Asio deliberately not added — ADR-0011.** The roadmap named it; every socket in Atlas
+    belongs to gRPC, so Asio would have been a second event loop supervising sockets it doesn't
+    own, plus a cold CI dependency rebuild. Revisit for Phase 6's crawler, where the HTTP fetches
+    genuinely aren't gRPC's.
+  - **DoD met and demonstrated:** `coordinator_test` (4 shards, partial results on shard death,
+    32 concurrent clients at **~4900 q/s**, cache cold 4.0 ms → warm 0.002 ms), `phase4_e2e_test`
+    (real metadata + 4 storage/search nodes + client + coordinator; upload → indexed → found),
+    and `scripts/demo-distributed-search.sh` (19 concept notes ingested, split **6/5/3/5** across
+    shards, ranked queries, 11.4 ms → 0.01 ms cached, then `kill -9` a shard and watch it answer
+    3/4 with a partial-results warning).
+  - **`atlas` CLI** gains `search`, `shards`, `cache`; `atlas_node` gains `ATLAS_ROLE=coordinator`;
+    compose gains a coordinator service.
+  - **Known gaps:** cached entries have no TTL and aren't invalidated on indexing, so a freshly
+    indexed document may not appear in a cached query; no single-flight, so N concurrent misses
+    for one key all fan out; a re-upload re-indexes but never *deletes* from a previous owning
+    shard if placement moved; LFU has no aging, so a once-hot query can squat. — Harshal
+
 - **2026-08-01** — [Phase 2] **PR #7 merged with `main` (now Phase 0+1+3) and reviewed.** 13/13
   test targets green, clang-format clean.
   - **Conflicts resolved:** `CMakeLists.txt` (one `atlas_node` links both tracks — storage +
@@ -328,8 +379,17 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
   metadata service, and there's no client binary — the M1 demo runs only in-process inside
   `phase1_e2e_test`. Needs an `ATLAS_ROLE=metadata|storage` switch + a small `atlas put/get` CLI +
   a compose file with a metadata service. **Before the demo.**
-- [ ] **Phase 1 leftover** — node-join chunk migration (ring property proven; physical move deferred
-  to Phase 2, which shares the re-replication machinery).
+- [x] **Phase 1 leftover** — node-join chunk migration (landed in Phase 2, `rebalance_test`).
+- [x] **Phase 4** — coordinator scatter-gather + global top-K merge → `scatter-gather` note.
+- [x] **Phase 4** — LRU + LFU caches, hit ratios compared on one workload → `lru-lfu-cache` note.
+- [x] **Phase 4** — thread pool + connection pool → `thread-pool`, `connection-pool` notes.
+- [x] **Phase 4** — async fan-out (gRPC CompletionQueue, not Boost.Asio) → `async-io`, ADR-0011.
+- [x] **Phase 4** — global BM25 statistics so shard scores are comparable → ADR-0010.
+- [x] **Phase 4 prerequisite** — ingestion indexes into the owning search shard; nodes advertise
+      `Role::SEARCH`. Without it every shard was empty.
+- [ ] **Phase 4 follow-up** — cache invalidation on index (a cached query can hide a new document);
+      single-flight for concurrent misses; LFU aging; delete from the old shard when a re-upload
+      changes a document's owner.
 
 ## Resolved decisions
 

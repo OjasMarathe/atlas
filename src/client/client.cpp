@@ -26,6 +26,54 @@ StorageService::Stub* AtlasClient::StorageAt(const std::string& address) {
   return it->second.get();
 }
 
+SearchService::Stub* AtlasClient::SearchAt(const std::string& address) {
+  auto it = search_.find(address);
+  if (it == search_.end()) {
+    auto channel = grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+    it = search_.emplace(address, SearchService::NewStub(channel)).first;
+  }
+  return it->second.get();
+}
+
+namespace {
+
+// Cheap "is this text?" test. A NUL byte is the reliable tell for binary in practice, and the
+// prefix is enough — we are deciding whether to index, not validating an encoding. A real
+// pipeline extracts text from PDFs and DOCXs here; that is Phase 6's crawler/extractor work.
+bool LooksLikeText(const std::string& data) {
+  if (data.empty()) return false;
+  const std::size_t sample = std::min<std::size_t>(data.size(), 8192);
+  for (std::size_t i = 0; i < sample; ++i) {
+    if (data[i] == '\0') return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool AtlasClient::IndexDocument(const std::vector<NodeId>& owners,
+                                const std::unordered_map<std::string, std::string>& address,
+                                const std::string& file_id, const std::string& text,
+                                const std::map<std::string, std::string>& fields) {
+  IndexDocumentRequest request;
+  request.set_file_id(file_id);
+  request.set_text(text);
+  for (const auto& [key, value] : fields) (*request.mutable_fields())[key] = value;
+
+  // Exactly one shard indexes the document (ADR-0006), so the coordinator's merge sees it once.
+  // The candidates are its chunk's holders in ring-preference order; we walk them only until one
+  // accepts, which makes the owner deterministic while still tolerating a dead primary.
+  for (const NodeId& owner : owners) {
+    const auto it = address.find(owner);
+    if (it == address.end()) continue;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+    Status response;
+    if (SearchAt(it->second)->IndexDocument(&context, request, &response).ok()) return true;
+  }
+  return false;
+}
+
 bool AtlasClient::FetchRing(RingState* out) {
   grpc::ClientContext ctx;
   GetRingRequest request;
@@ -33,7 +81,7 @@ bool AtlasClient::FetchRing(RingState* out) {
 }
 
 UploadResult AtlasClient::Upload(const std::string& file_id, const std::string& owner,
-                                 const std::string& data) {
+                                 const std::string& data, const UploadOptions& options) {
   RingState ring_state;
   if (!FetchRing(&ring_state)) return {false, "failed to fetch ring", 0};
   if (ring_state.nodes_size() < kReplicationFactor) {
@@ -56,6 +104,7 @@ UploadResult AtlasClient::Upload(const std::string& file_id, const std::string& 
   reg.set_sha256(Sha256Hex(data));
 
   const std::vector<Chunk> chunks = ChunkBytes(data, chunk_size_);
+  std::vector<NodeId> document_owners;  // holders of chunk 0, in ring-preference order
   for (const Chunk& chunk : chunks) {
     const std::vector<NodeId> replicas = ring.Replicas(chunk.id, kReplicationFactor);
     ChunkPlacement* placement = reg.add_chunks();
@@ -76,13 +125,22 @@ UploadResult AtlasClient::Upload(const std::string& file_id, const std::string& 
     if (acks < kWriteQuorum) {
       return {false, "chunk " + chunk.id + " did not reach write quorum (W=2)", 0};
     }
+    if (document_owners.empty()) document_owners = replicas;
   }
 
   grpc::ClientContext ctx;
   FileMetadata committed;
   const grpc::Status status = metadata_->RegisterFile(&ctx, reg, &committed);  // commit point
   if (!status.ok()) return {false, "RegisterFile failed: " + status.error_message(), 0};
-  return {true, "", chunks.size()};
+
+  // Index *after* the commit, and never fail the upload on it. The bytes are durable and the
+  // file is readable at this point; a shard being unreachable makes the document temporarily
+  // unsearchable, which is a far smaller problem than rejecting a write that already landed.
+  bool indexed = false;
+  if (options.index && LooksLikeText(data)) {
+    indexed = IndexDocument(document_owners, address, file_id, data, options.fields);
+  }
+  return {true, "", chunks.size(), indexed};
 }
 
 DownloadResult AtlasClient::Download(const std::string& file_id, std::uint64_t version) {

@@ -71,7 +71,7 @@ Full detail: [docs/architecture/system-architecture.md](docs/architecture/system
 |---|---|---|
 | Core services | **C++20** | Systems-level control; the concurrency primitives *are* the learning |
 | RPC / contracts | **gRPC + Protocol Buffers** | Typed service boundaries between coordinator, metadata, storage |
-| Networking | **Boost.Asio** | Async I/O for the query/connection layer |
+| Networking | **gRPC async (`CompletionQueue`)** | Async I/O for the query fan-out. Boost.Asio was the original plan; every Atlas socket belongs to gRPC, so a second event loop would have shadowed the first ([ADR-0011](docs/architecture/adr/0011-async-model-grpc-completion-queue.md)) |
 | Storage engine | **RocksDB** (embedded LSM) | Don't hand-roll a KV store; focus on the *distributed* layer above it |
 | Semantic module | **Python** (later phase) | Best ecosystem for embeddings / sentence-transformers |
 | Dashboard + API | **React, TypeScript, Tailwind, D3.js** | Analytics + live cluster view |
@@ -101,11 +101,13 @@ atlas/
 
 ## Status
 
-**Phases 0–3 complete** — a running, self-healing distributed file system (content-addressed
-chunking, consistent-hashing placement, 3× replication with a 2-of-3 write quorum, copy-on-write
-versioning, failure detection, automatic re-replication and node-join migration) plus a search
-engine over it (inverted index, BM25, boolean/phrase queries, autocomplete, spell correction).
-See [docs/plan/roadmap.md](docs/plan/roadmap.md) for the phased plan and
+**Phases 0–4 complete — Milestone 1 is met.** A running, self-healing distributed file system
+(content-addressed chunking, consistent-hashing placement, 3× replication with a 2-of-3 write
+quorum, copy-on-write versioning, failure detection, automatic re-replication and node-join
+migration); a search engine over it (inverted index, BM25, boolean/phrase queries, autocomplete,
+spell correction); and a **query coordinator** that scatter-gathers each query across every shard,
+merges a globally-correct top-K, and caches it. Upload a file, search the cluster, kill a node,
+keep answering. See [docs/plan/roadmap.md](docs/plan/roadmap.md) for the phased plan and
 [docs/plan/progress.md](docs/plan/progress.md) for the running log.
 
 ## Team
@@ -190,11 +192,36 @@ uploaded demo.txt (266669 bytes, 1 chunk(s), replicated 3x)
 OK — downloaded file is identical to the original
 ```
 
-### Search
+### Distributed search
 
-Every storage node also serves its own `SearchService` shard on the same port (ADR-0006).
-`atlas_search_demo` indexes the `docs/` corpus and runs ranked queries against it:
+Every storage node also serves its own `SearchService` shard on the same port (ADR-0006), and
+`atlas put` indexes the document on the shard that owns it. A **coordinator** fans each query out
+across every shard, merges a globally-correct top-K, and caches the result.
 
 ```bash
-./build/atlas_search_demo
+./build/atlas put notes.md docs/concepts/consistent-hashing.md
+./build/atlas shards                       # per-shard index sizes — they sum, not repeat
+./build/atlas search "consistent hashing ring" 3
+./build/atlas cache                        # LRU/LFU hit ratio
 ```
+
+```
+== ranked queries, fanned out across every shard ==
+  query: consistent hashing ring
+  3 hit(s) in 11.38 ms across 4/4 shard(s)
+    1. consistent-hashing.md  (4.3992)
+    2. chunk-migration.md     (4.2264)
+    3. replication.md         (3.8615)
+
+== the result cache: same query again ==
+  3 hit(s) in 0.01 ms across 4/4 shard(s)  [cache hit]
+```
+
+Run the whole thing — ingest, ranked queries across shards, the cache, and a shard dying
+mid-flight:
+
+```bash
+./scripts/demo-distributed-search.sh
+```
+
+`atlas_search_demo` still runs the single-shard engine against a local corpus, no cluster needed.

@@ -47,12 +47,24 @@ grpc::Status SearchServiceImpl::Search(grpc::ServerContext* /*context*/,
                                        atlas::SearchResponse* response) {
   const std::uint32_t top_k = request->top_k() > 0 ? request->top_k() : kDefaultTopK;
 
+  // Round 2 of a DFS query: rank with the corpus-wide statistics the coordinator summed, so
+  // this shard's scores are comparable with every other shard's (ADR-0010).
+  GlobalStatistics global;
+  const bool use_global = request->has_global_stats();
+  if (use_global) {
+    global.document_count = request->global_stats().doc_count();
+    global.average_document_length = request->global_stats().avg_doc_len();
+    for (const auto& [term, frequency] : request->global_stats().document_frequency()) {
+      global.document_frequency[term] = frequency;
+    }
+  }
+
   std::string error;
   std::vector<SearchHit> hits;
   ShardStatistics stats{};
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    hits = engine_.Search(request->query(), top_k, &error);
+    hits = engine_.Search(request->query(), top_k, &error, use_global ? &global : nullptr);
     stats = engine_.Stats();
   }
   if (!error.empty()) {
@@ -70,6 +82,21 @@ grpc::Status SearchServiceImpl::Search(grpc::ServerContext* /*context*/,
   shard_stats->set_doc_count(stats.document_count);
   shard_stats->set_unique_terms(stats.unique_terms);
   shard_stats->set_avg_doc_len(stats.average_document_length);
+  return grpc::Status::OK;
+}
+
+grpc::Status SearchServiceImpl::TermStats(grpc::ServerContext* /*context*/,
+                                          const atlas::TermStatsRequest* request,
+                                          atlas::TermStatsResponse* response) {
+  const std::vector<std::string> terms(request->terms().begin(), request->terms().end());
+
+  const std::lock_guard<std::mutex> lock(mutex_);
+  const ShardStatistics stats = engine_.Stats();
+  response->set_doc_count(stats.document_count);
+  response->set_avg_doc_len(stats.average_document_length);
+  for (const auto& [term, frequency] : engine_.TermFrequencies(terms)) {
+    (*response->mutable_document_frequency())[term] = frequency;
+  }
   return grpc::Status::OK;
 }
 

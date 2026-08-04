@@ -28,6 +28,14 @@ class SearchServiceImpl final : public atlas::SearchService::Service {
   grpc::Status Stats(grpc::ServerContext* context, const atlas::StatsRequest* request,
                      atlas::ShardStats* response) override;
 
+  // Round 1 of a DFS query: this shard's n(t) for the coordinator's term set.
+  grpc::Status TermStats(grpc::ServerContext* context, const atlas::TermStatsRequest* request,
+                         atlas::TermStatsResponse* response) override;
+
+  // Direct access for in-process callers (the demo and tests index without a network hop).
+  SearchEngine& engine() { return engine_; }
+  std::mutex& mutex() { return mutex_; }
+
  private:
   // gRPC serves each RPC on its own thread, and SearchEngine is not internally synchronized.
   // One mutex is the honest M1 answer; a reader-writer split (concurrent searches, exclusive

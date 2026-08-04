@@ -55,12 +55,15 @@ Grouped by area; tagged with the phase where we hit it. Check off as notes land.
 - [x] [boolean-phrase-search](boolean-phrase-search.md) — AND/OR/NOT + skip pointers + positional phrase matching
 
 ### Distributed query engine (Phase 4)
-- [ ] index-sharding — document- vs term-partitioning (ADR-0006)
-- [ ] scatter-gather — fan-out, merge, global top-K
-- [ ] lru-lfu-cache — eviction policies compared
-- [ ] thread-pool — bounded worker pool + task queue
-- [ ] connection-pool — reusing gRPC channels
-- [ ] async-io — Boost.Asio event loop, back-pressure
+- [x] [scatter-gather](scatter-gather.md) — fan-out, merge, global top-K (+ DFS global scoring)
+- [x] [lru-lfu-cache](lru-lfu-cache.md) — eviction policies compared, both O(1)
+- [x] [thread-pool](thread-pool.md) — bounded worker pool + task queue
+- [x] [connection-pool](connection-pool.md) — reusing gRPC channels
+- [x] [async-io](async-io.md) — completion-queue fan-out (*not* Boost.Asio, see
+      [ADR-0011](../architecture/adr/0011-async-model-grpc-completion-queue.md))
+- [x] index-sharding — *the decision itself is [ADR-0006](../architecture/adr/0006-search-index-document-partitioned.md)
+      (partition by document); its consequences for querying are worked through in
+      [scatter-gather](scatter-gather.md)*
 
 ### Semantic search (Phase 5)
 - [ ] embeddings — sentence-transformer vectors

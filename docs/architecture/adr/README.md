@@ -26,9 +26,14 @@ Copy an existing one as a template.
 | [0006](0006-search-index-document-partitioned.md) | Search index: partition by document | Accepted |
 | [0007](0007-inverted-index-format-compression.md) | Inverted-index format & posting-list compression | Accepted |
 | [0009](0009-failure-detection-and-healing.md) | Failure detection & self-healing model | Accepted |
+| [0010](0010-global-scoring-dfs.md) | Global BM25 statistics for distributed ranking (DFS) | Accepted |
+| [0011](0011-async-model-grpc-completion-queue.md) | Async model: gRPC CompletionQueue, not Boost.Asio | Accepted |
 
 ### Upcoming ADRs to write
 
-- **0008** — Query-parsing location: coordinator vs. search shard — *Phase 3* (candidate, see
-  ADR-0007's carried-forward open question). Phase 2 skipped to 0009 to leave 0008 for the
-  search track.
+- **0008** — Query-parsing location: coordinator vs. search shard — *Phase 3/4*. **Effectively
+  resolved in Phase 4** and recorded inline in `proto/search.proto`: the shard parses, because
+  parsing costs microseconds against milliseconds of network and a query string on the wire is
+  easier to debug than a serialized AST. The parser still lives in the shared `src/common/query`
+  module so the coordinator *can* take over when there is a reason to. Worth promoting to a real
+  ADR if we ever move it.

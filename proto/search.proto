@@ -13,6 +13,12 @@ service SearchService {
   rpc Search(SearchRequest) returns (SearchResponse);   // local shard top-K
   rpc Suggest(SuggestRequest) returns (SuggestResponse); // Trie autocomplete (Phase 3b)
   rpc Stats(StatsRequest) returns (ShardStats);
+
+  // Per-term document frequencies for this shard (Phase 4, round 1 of DFS query-then-fetch).
+  // The coordinator sums these across shards to build a *global* IDF, then replays the query
+  // with it — without this, each shard's IDF is computed over its own documents only and the
+  // merged ranking is an approximation. See concepts/scatter-gather.md and ADR-0010.
+  rpc TermStats(TermStatsRequest) returns (TermStatsResponse);
 }
 
 message IndexDocumentRequest {
@@ -24,7 +30,31 @@ message IndexDocumentRequest {
 message SearchRequest {
   string query = 1;
   uint32 top_k = 2;
-  // TODO(co-design): where do boolean/phrase/filters get parsed — here or coordinator-side?
+  // Resolved (Phase 4): the shard parses. The coordinator *could* parse once and ship a tree,
+  // and the parser lives in a shared module (src/common/query) precisely so it can — but the
+  // query string is small, parsing is microseconds against milliseconds of network, and shipping
+  // a string keeps the wire format debuggable. Revisit if parsing ever shows up in a profile.
+
+  // Set by the coordinator on round 2 of a DFS query. When present the shard ranks with these
+  // corpus-wide statistics instead of its own, so scores from different shards are comparable.
+  GlobalStats global_stats = 3;
+}
+
+// Corpus-wide BM25 inputs, summed by the coordinator across every shard.
+message GlobalStats {
+  uint64 doc_count = 1;                       // N over the whole corpus
+  double avg_doc_len = 2;                     // document-count-weighted avgdl
+  map<string, uint64> document_frequency = 3; // n(t) over the whole corpus, per query term
+}
+
+message TermStatsRequest {
+  repeated string terms = 1;             // analyzed query terms the coordinator needs n(t) for
+}
+
+message TermStatsResponse {
+  uint64 doc_count = 1;                       // this shard's N
+  double avg_doc_len = 2;                     // this shard's avgdl
+  map<string, uint64> document_frequency = 3; // this shard's n(t) for each requested term
 }
 
 message ScoredDoc {

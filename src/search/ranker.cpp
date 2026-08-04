@@ -9,8 +9,16 @@
 namespace atlas::search {
 
 double Ranker::InverseDocumentFrequency(std::string_view term) const {
-  const auto n = static_cast<double>(index_.DocumentFrequency(term));
-  const auto total = static_cast<double>(index_.DocumentCount());
+  double n = static_cast<double>(index_.DocumentFrequency(term));
+  double total = static_cast<double>(index_.DocumentCount());
+  if (global_ != nullptr) {
+    total = static_cast<double>(global_->document_count);
+    // A term the coordinator did not ask about falls back to the local count rather than 0:
+    // n(t)=0 would inflate IDF to its maximum and make an unknown term the strongest signal
+    // in the query.
+    const auto it = global_->document_frequency.find(std::string(term));
+    if (it != global_->document_frequency.end()) n = static_cast<double>(it->second);
+  }
   return std::log(1.0 + (total - n + 0.5) / (n + 0.5));
 }
 
@@ -20,7 +28,11 @@ std::vector<ScoredDocument> Ranker::TopK(const std::vector<std::string>& query_t
   if (candidates.empty() || query_terms.empty() || top_k == 0) return {};
 
   const std::unordered_set<DocId> allowed(candidates.begin(), candidates.end());
-  const double avgdl = index_.AverageDocumentLength();
+  // Length normalization divides this document's length by the *corpus* average, so when the
+  // coordinator supplies a global avgdl a long document is judged long relative to the whole
+  // collection rather than to whatever happens to share its shard.
+  const double avgdl =
+      global_ != nullptr ? global_->average_document_length : index_.AverageDocumentLength();
 
   // Term-at-a-time: walk each term's posting list once and accumulate into a doc -> score map,
   // rather than re-scanning the index per candidate document.

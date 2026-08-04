@@ -119,6 +119,7 @@ target_link_libraries(atlas_cluster
 # ---- ingestion / read client: chunk -> replicate via ring -> register; read-around on download ----
 add_library(atlas_client STATIC src/client/client.cpp)
 target_link_libraries(atlas_client PUBLIC atlas_dfs atlas_chunk_transfer atlas_proto gRPC::grpc++)
+target_include_directories(atlas_client PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 # =========================== Phase 3: search engine ===========================
 
@@ -150,6 +151,24 @@ target_link_libraries(atlas_search_store PUBLIC atlas_search RocksDB::rocksdb)
 add_library(atlas_search_service STATIC src/search/search_service.cpp)
 target_link_libraries(atlas_search_service PUBLIC atlas_search atlas_proto gRPC::grpc++)
 
+# ====================== Phase 4: distributed query engine ======================
+
+# Header-only: LRU/LFU caches and the thread/connection pools are templates. An INTERFACE target
+# carries the include path and dependencies without producing an archive nothing would link.
+add_library(atlas_concurrency INTERFACE)
+target_include_directories(atlas_concurrency INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(atlas_concurrency INTERFACE gRPC::grpc++)
+
+# Fan-out + merge + result cache. Depends on atlas_search only for the query analyzer, which the
+# coordinator needs to ask every shard about the same term set.
+add_library(atlas_coordinator STATIC src/coordinator/coordinator.cpp)
+target_link_libraries(atlas_coordinator
+  PUBLIC atlas_concurrency atlas_search atlas_proto gRPC::grpc++)
+
+# gRPC adapter kept separate, mirroring atlas_search / atlas_search_service.
+add_library(atlas_coordinator_service STATIC src/coordinator/coordinator_service.cpp)
+target_link_libraries(atlas_coordinator_service PUBLIC atlas_coordinator atlas_proto gRPC::grpc++)
+
 # ============================== executables ==============================
 
 # One binary, two roles (ATLAS_ROLE=storage|metadata). A storage node also serves this shard's
@@ -159,6 +178,7 @@ add_executable(atlas_node src/node/main.cpp)
 # gRPC::grpc++ publicly; naming them again here makes the linker warn about duplicates.
 target_link_libraries(atlas_node PRIVATE atlas_storage_svc atlas_search_service
                                          atlas_metadata_svc atlas_cluster
+                                         atlas_coordinator_service
                                          gRPC::grpc++_reflection)
 
 # ---- atlas: command-line client (put / get / info / nodes) ----
@@ -229,6 +249,29 @@ add_executable(phase1_e2e_test tests/phase1_e2e_test.cpp)
 target_link_libraries(phase1_e2e_test PRIVATE atlas_client atlas_storage_svc atlas_metadata_svc
                                               gRPC::grpc++)
 add_test(NAME phase1_e2e_test COMMAND phase1_e2e_test)
+
+# ---- Phase 4: distributed query engine ----
+
+add_executable(cache_test tests/cache_test.cpp)
+target_link_libraries(cache_test PRIVATE atlas_concurrency)
+add_test(NAME cache_test COMMAND cache_test)
+
+add_executable(pool_test tests/pool_test.cpp)
+target_link_libraries(pool_test PRIVATE atlas_concurrency atlas_search_service gRPC::grpc++)
+add_test(NAME pool_test COMMAND pool_test)
+
+# Phase 4 headline: fan a query across 4 real shards, merge, cache, survive a shard loss.
+add_executable(coordinator_test tests/coordinator_test.cpp)
+target_link_libraries(coordinator_test
+  PRIVATE atlas_coordinator atlas_search_service gRPC::grpc++)
+add_test(NAME coordinator_test COMMAND coordinator_test)
+
+# End-to-end: real cluster, `atlas put` indexes, coordinator finds it across shards.
+add_executable(phase4_e2e_test tests/phase4_e2e_test.cpp)
+target_link_libraries(phase4_e2e_test
+  PRIVATE atlas_coordinator_service atlas_client atlas_storage_svc atlas_metadata_svc
+          atlas_search_service gRPC::grpc++)
+add_test(NAME phase4_e2e_test COMMAND phase4_e2e_test)
 
 add_executable(atlas_search_tests
   tests/search/tokenizer_test.cpp

@@ -10,13 +10,19 @@
 //     Serves MetadataService (file map + ring) and runs the maintenance loop: probe every member
 //     for liveness, then re-replicate any chunk that has fallen below the replication factor.
 //
+//   ATLAS_ROLE=coordinator
+//     Serves CoordinatorService (Phase 4): discovers search shards from the ring, scatter-gathers
+//     each query across all of them, merges their local top-Ks, and caches the result.
+//
 // Config via env:
 //   ATLAS_NODE_ID    node's id                  (default "node-0")
 //   ATLAS_LISTEN     bind address host:port     (default "0.0.0.0:50051")
 //   ATLAS_ADVERTISE  address peers should dial  (default: ATLAS_LISTEN)
 //   ATLAS_DATA_DIR   on-disk state path         (default "atlas-data-<node id>")
-//   ATLAS_METADATA   metadata address           (storage role: register here; "" -> don't)
+//   ATLAS_METADATA   metadata address           (storage: register here; coordinator: discover)
 //   ATLAS_HEAL_INTERVAL_MS / ATLAS_FAILURE_THRESHOLD  (metadata role: loop tuning)
+//   ATLAS_CACHE_POLICY / ATLAS_CACHE_CAPACITY / ATLAS_SHARD_TIMEOUT_MS / ATLAS_GLOBAL_SCORING
+//                                               (coordinator role: tuning)
 
 #include <atomic>
 #include <chrono>
@@ -32,6 +38,8 @@
 #include <grpcpp/grpcpp.h>
 
 #include "cluster/maintenance.h"
+#include "coordinator/coordinator.h"
+#include "coordinator/coordinator_service.h"
 #include "metadata.grpc.pb.h"
 #include "metadata/metadata_service.h"
 #include "metadata/metadata_store.h"
@@ -95,6 +103,10 @@ void RegisterWithMetadata(const std::string& metadata_address, const std::string
     request.mutable_node()->set_node_id(node_id);
     request.mutable_node()->set_address(advertise);
     request.mutable_node()->add_roles(atlas::STORAGE);
+    // The same process serves this node's search shard on the same port, so it advertises both.
+    // Phase 4's coordinator discovers shards by filtering the ring on SEARCH — a node that only
+    // claimed STORAGE would store documents nobody could ever query.
+    request.mutable_node()->add_roles(atlas::SEARCH);
     request.set_change(atlas::UpdateMembershipRequest::JOIN);
     atlas::RingState response;
     if (stub->UpdateMembership(&ctx, request, &response).ok()) {
@@ -179,6 +191,39 @@ int RunMetadata(const std::string& id, const std::string& listen) {
   return 0;
 }
 
+int RunCoordinator(const std::string& id, const std::string& listen) {
+  const std::string metadata_address = EnvOr("ATLAS_METADATA", "127.0.0.1:50050");
+
+  atlas::coordinator::CoordinatorOptions options;
+  options.cache_capacity = static_cast<std::size_t>(EnvInt("ATLAS_CACHE_CAPACITY", 256));
+  options.cache_policy = EnvOr("ATLAS_CACHE_POLICY", "lru");
+  options.shard_timeout = std::chrono::milliseconds(EnvInt("ATLAS_SHARD_TIMEOUT_MS", 1500));
+  options.global_scoring = EnvInt("ATLAS_GLOBAL_SCORING", 1) != 0;
+
+  atlas::coordinator::RingShardDirectory directory(metadata_address);
+  atlas::coordinator::QueryCoordinator coordinator([&directory] { return directory.Shards(); },
+                                                   options);
+  atlas::coordinator::CoordinatorServiceImpl service(&coordinator);
+
+  grpc::EnableDefaultHealthCheckService(true);
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort(listen, grpc::InsecureServerCredentials());
+  builder.RegisterService(&service);
+  std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
+  if (!server) {
+    std::cerr << "[" << id << "] failed to bind " << listen << std::endl;
+    return 1;
+  }
+
+  Log("coordinator listening on " + listen + " | metadata " + metadata_address);
+  Log("result cache: " + options.cache_policy + ", capacity " +
+      std::to_string(options.cache_capacity) + " | global scoring " +
+      (options.global_scoring ? "on (2-round DFS)" : "off (shard-local scores)"));
+
+  ServeUntilSignalled(server.get());
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -191,8 +236,10 @@ int main() {
   const std::string advertise = EnvOr("ATLAS_ADVERTISE", listen);
 
   if (role == "metadata") return RunMetadata(g_id, listen);
+  if (role == "coordinator") return RunCoordinator(g_id, listen);
   if (role != "storage") {
-    std::cerr << "unknown ATLAS_ROLE '" << role << "' (expected 'storage' or 'metadata')\n";
+    std::cerr << "unknown ATLAS_ROLE '" << role
+              << "' (expected 'storage', 'metadata' or 'coordinator')\n";
     return 2;
   }
   return RunStorage(g_id, listen, advertise);
