@@ -95,7 +95,11 @@ bool QueryCoordinator::CollectGlobalStats(const std::vector<Shard>& shards,
   while (queue.Next(&drain_tag, &drain_ok)) {
   }
 
-  if (answered == 0 || total_documents == 0) return false;
+  // Every shard must answer. Statistics gathered from a subset are not corpus statistics: a
+  // missing shard shrinks N and avgdl and undercounts n(t) for every term, so the IDF applied to
+  // all shards is wrong — and silently, since the scores still look plausible. Better to fall
+  // back to shard-local scoring, which is at least a known approximation.
+  if (answered != static_cast<int>(shards.size()) || total_documents == 0) return false;
 
   out->set_doc_count(total_documents);
   out->set_avg_doc_len(weighted_length / static_cast<double>(total_documents));
@@ -182,9 +186,13 @@ QueryResult QueryCoordinator::Query(const std::string& query, std::size_t top_k,
   // Round 1: corpus-wide statistics, so shard scores are comparable when merged.
   atlas::GlobalStats global;
   bool have_global = false;
+  bool global_wanted = false;  // a query with terms to score, on a globally-scored coordinator
   if (options_.global_scoring) {
     const std::vector<std::string> terms = search::SearchEngine::QueryTerms(query);
-    if (!terms.empty()) have_global = CollectGlobalStats(shards, terms, &global);
+    if (!terms.empty()) {
+      global_wanted = true;
+      have_global = CollectGlobalStats(shards, terms, &global);
+    }
   }
 
   // Round 2: the query itself.
@@ -224,8 +232,11 @@ QueryResult QueryCoordinator::Query(const std::string& query, std::size_t top_k,
   result.latency_ms = elapsed_ms();
 
   // Only cache a complete answer. Caching a partial result would pin one shard's outage into
-  // every later query for as long as the entry survives.
-  if (result.shards_responded == result.shards_queried) {
+  // every later query for as long as the entry survives — and that applies to the statistics
+  // round too: a result that fell back to shard-local scoring is cached under the same key a
+  // globally-scored one would use, so it would keep serving the approximation long after the
+  // stats round started succeeding again.
+  if (result.shards_responded == result.shards_queried && (!global_wanted || have_global)) {
     QueryResult cacheable = result;
     cacheable.cache_hit = false;
     cacheable.latency_ms = 0.0;

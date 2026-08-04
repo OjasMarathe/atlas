@@ -1,6 +1,8 @@
 #include "search/search_engine.h"
 
 #include <algorithm>
+#include <cctype>
+#include <unordered_set>
 #include <utility>
 
 #include "search/postings.h"
@@ -52,7 +54,16 @@ DocId SearchEngine::IndexDocument(std::string file_id, std::string_view text,
 }
 
 bool SearchEngine::DeleteDocument(std::string_view file_id) {
-  return index_.DeleteDocument(file_id);
+  if (!index_.DeleteDocument(file_id)) return false;
+  // The vocabulary shrank, so the suggesters no longer reflect it.
+  suggesters_dirty_ = true;
+
+  const std::size_t total = index_.DocumentCount() + index_.DeletedDocumentCount();
+  if (total > 0 && static_cast<double>(index_.DeletedDocumentCount()) / static_cast<double>(total) >
+                       kCompactionThreshold) {
+    Compact();
+  }
+  return true;
 }
 
 void SearchEngine::Compact() {
@@ -67,6 +78,12 @@ void SearchEngine::RebuildSuggesters() {
     completions_.Insert(word, frequency);
     vocabulary_.Insert(word);
   }
+  suggesters_dirty_ = false;
+}
+
+void SearchEngine::EnsureSuggestersFresh() const {
+  if (!suggesters_dirty_) return;
+  const_cast<SearchEngine*>(this)->RebuildSuggesters();
 }
 
 std::vector<DocId> SearchEngine::EvaluatePhrase(const query::Node* node) const {
@@ -126,6 +143,51 @@ std::vector<DocId> SearchEngine::EvaluatePhrase(const query::Node* node) const {
     }
   }
   return matches;
+}
+
+std::string SearchEngine::BuildSnippet(DocId doc_id, const std::vector<std::string>& terms) const {
+  const std::string& text = index_.Text(doc_id);
+  if (text.empty() || terms.empty()) return {};
+
+  const std::unordered_set<std::string> wanted(terms.begin(), terms.end());
+
+  // Re-tokenize on demand rather than storing byte offsets for every term: only the handful of
+  // documents that reached the top-K ever pay for it.
+  const std::vector<LocatedToken> tokens = TokenizeWithOffsets(text);
+  std::size_t match_begin = std::string::npos;
+  for (const LocatedToken& token : tokens) {
+    if (IsStopWord(token.text)) continue;
+    if (wanted.contains(Stem(token.text))) {
+      match_begin = token.begin;
+      break;
+    }
+  }
+  if (match_begin == std::string::npos) return {};
+
+  // Center a window on the match, then snap both ends outward to whitespace so the snippet
+  // doesn't start or end mid-word. The snap is bounded: text with no spaces (a long token, a
+  // base64 blob) would otherwise drag the window across the whole document.
+  constexpr std::size_t kContext = 90;
+  constexpr std::size_t kMaxSnap = 20;
+  std::size_t begin = match_begin > kContext ? match_begin - kContext : 0;
+  std::size_t end = std::min(text.size(), match_begin + kContext);
+
+  const std::size_t snap_floor = begin > kMaxSnap ? begin - kMaxSnap : 0;
+  while (begin > snap_floor && (std::isspace(static_cast<unsigned char>(text[begin])) == 0)) {
+    --begin;
+  }
+  const std::size_t snap_ceiling = std::min(text.size(), end + kMaxSnap);
+  while (end < snap_ceiling && (std::isspace(static_cast<unsigned char>(text[end])) == 0)) ++end;
+
+  std::string snippet;
+  if (begin > 0) snippet += "...";
+  // Collapse newlines so a snippet stays on one line.
+  for (std::size_t i = begin; i < end; ++i) {
+    const char ch = text[i];
+    snippet.push_back(ch == '\n' || ch == '\r' ? ' ' : ch);
+  }
+  if (end < text.size()) snippet += "...";
+  return snippet;
 }
 
 std::vector<DocId> SearchEngine::Evaluate(const query::Node* node) const {
@@ -197,7 +259,7 @@ std::vector<SearchHit> SearchEngine::Search(std::string_view query, std::size_t 
     filtered.reserve(std::min(top_k, candidates.size()));
     for (const DocId doc_id : candidates) {
       if (filtered.size() >= top_k) break;
-      filtered.push_back(SearchHit{index_.FileId(doc_id), 0.0});
+      filtered.push_back(SearchHit{index_.FileId(doc_id), 0.0, {}});
     }
     return filtered;
   }
@@ -208,12 +270,14 @@ std::vector<SearchHit> SearchEngine::Search(std::string_view query, std::size_t 
   std::vector<SearchHit> hits;
   hits.reserve(ranked.size());
   for (const ScoredDocument& doc : ranked) {
-    hits.push_back(SearchHit{index_.FileId(doc.doc_id), doc.score});
+    hits.push_back(
+        SearchHit{index_.FileId(doc.doc_id), doc.score, BuildSnippet(doc.doc_id, terms)});
   }
   return hits;
 }
 
 std::vector<Completion> SearchEngine::Suggest(std::string_view prefix, std::size_t limit) const {
+  EnsureSuggestersFresh();
   const std::vector<std::string> analyzed = Tokenize(prefix);
   if (analyzed.empty()) return {};
   // Autocomplete works on the surface form, not the stem: a user typing "replic" expects
@@ -223,6 +287,7 @@ std::vector<Completion> SearchEngine::Suggest(std::string_view prefix, std::size
 
 std::vector<Suggestion> SearchEngine::DidYouMean(std::string_view word,
                                                  std::size_t max_distance) const {
+  EnsureSuggestersFresh();
   const std::vector<std::string> tokens = Tokenize(word);
   if (tokens.size() != 1) return {};
   if (index_.Vocabulary().contains(tokens.front())) return {};  // spelled fine already

@@ -75,7 +75,7 @@ grpc::Status SearchServiceImpl::Search(grpc::ServerContext* /*context*/,
     atlas::ScoredDoc* scored = response->add_hits();
     scored->set_file_id(hit.file_id);
     scored->set_score(hit.score);
-    // snippet: needs byte offsets from the tokenizer to highlight the matched span — Phase 3b.
+    scored->set_snippet(hit.snippet);
   }
   // The coordinator needs these to correct for per-shard BM25 statistics (see concepts/bm25.md).
   atlas::ShardStats* shard_stats = response->mutable_stats();

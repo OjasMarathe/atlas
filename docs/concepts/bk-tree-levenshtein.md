@@ -137,8 +137,10 @@ for (auto it = node->children.lower_bound(low); it != node->children.end() && it
   which is more common — a real ranker would weight by corpus frequency and keyboard adjacency.
 - **Transpositions cost 2**, not 1. `Damerau`-Levenshtein counts a swap as a single edit and
   matches human typing better; we implement plain Levenshtein.
-- **Deleted documents' words persist** in the vocabulary, so a correction may point at a word no
-  live document contains ([incremental-indexing](incremental-indexing.md)).
+- **Deleted documents' words stop being suggested**: a delete decrements the vocabulary and the
+  tree is rebuilt lazily on the next lookup ([incremental-indexing](incremental-indexing.md)).
+  A BK-tree has no removal operation — deleting an interior node would orphan its whole subtree —
+  so a rebuild is the only correct repair.
 - **Byte-oriented**, so multibyte UTF-8 characters count as several edits.
 
 ## Alternatives we considered

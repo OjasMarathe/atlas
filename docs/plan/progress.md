@@ -154,7 +154,31 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
     the 3a review (single gRPC error channel, multi-token query words expanded rather than dropped,
     bare-`NOT` doc matching the code). — Ojas
 
-## 2026-07
+## 2026-08
+
+- **2026-08-01** — [Phase 3] **Phase 3 finished** — the three leftovers are done. **158 tests**
+  green (from 138), also under `-DATLAS_SANITIZE=undefined`.
+  - **Snippets** — `TokenizeWithOffsets` gives byte offsets, so `ScoredDoc.snippet` now carries a
+    ~180-char window around the first matching term, ellipsed and newline-collapsed. The match is
+    located *through the analyzer* (stem-aware), so a query for "replicate" highlights
+    "replication". Documents' text is retained to make this possible — roughly doubling index
+    memory, the honest cost of highlighting, noted in the concept note.
+  - **RocksDB persistence** (`index_store.*`) — the storage half of ADR-0007: two column
+    families, postings one key per term, metadata under one key, written in a single atomic
+    `WriteBatch` (a half-applied save would be corrupt rather than merely stale). **Deviation
+    recorded in ADR-0007:** postings are keyed by the term string rather than an integer
+    `term_id` — it drops an id allocator and a second lookup, and RocksDB prefix-compresses keys
+    anyway.
+  - **Vocabulary decrement + auto-compaction** — deleting now re-analyzes the retained text and
+    gives back that document's vocabulary contribution, so autocomplete/spell-correction stop
+    offering words no live document has. The trie and BK-tree can't cheaply un-insert, so they're
+    marked dirty and rebuilt lazily on the next suggestion. Compaction fires automatically past a
+    30% tombstone ratio.
+  - **Two bugs the tests caught:** RocksDB column-family handles must be released *before* the DB
+    closes (its `~ColumnFamilySet` assertion fires otherwise), and the snippet's word-boundary
+    snap needed bounding — text without whitespace dragged the window across the whole document.
+  - **Not done:** nothing calls `IndexStore` from `main.cpp` yet, so a node restart still
+    re-indexes from scratch. The store and its tests exist; the wiring is a small follow-up. — Harshal
 
 - **2026-07-31** — [Phase 3] **3b complete.** Phrase search, filters, incremental indexing,
   autocomplete, spell correction, and posting-list compression. **138 tests** green (from 76),
@@ -346,9 +370,11 @@ Format: `YYYY-MM-DD — [phase] what changed — who`
 - [x] **Phase 3b** — phrase search (positional), field filters, incremental indexing + Compact().
 - [x] **Phase 3b** — posting-list compression (delta+varint) + index Serialize/Load → ADR-0007.
 - [x] **Phase 3b** — Trie autocomplete (`Suggest` RPC) + BK-tree/Levenshtein spell correction.
-- [ ] **Phase 3b** — RocksDB persistence for the index (the other half of ADR-0007).
-- [ ] **Phase 3b** — snippets in `ScoredDoc` (needs byte offsets from the tokenizer).
-- [ ] **Phase 3b** — automatic compaction trigger; decrement vocabulary on delete.
+- [x] **Phase 3b** — RocksDB persistence for the index (the other half of ADR-0007).
+- [x] **Phase 3b** — snippets in `ScoredDoc` (tokenizer byte offsets).
+- [x] **Phase 3b** — automatic compaction trigger; decrement vocabulary on delete.
+- [ ] **Phase 3 stretch** — load the persisted index on node start (store exists; nothing calls
+      it from `main.cpp` yet, so a restart still re-indexes).
 - [ ] **Runnable demo** (PR #5 review): `docker compose up` gives storage+search nodes but no
   metadata service, and there's no client binary — the M1 demo runs only in-process inside
   `phase1_e2e_test`. Needs an `ATLAS_ROLE=metadata|storage` switch + a small `atlas put/get` CLI +

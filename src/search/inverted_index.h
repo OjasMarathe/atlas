@@ -70,6 +70,14 @@ class InvertedIndex {
 
   const std::string& FileId(DocId doc_id) const;
 
+  // The document's original text, retained so snippets can quote it and so a delete can
+  // re-analyze it to decrement the vocabulary. This roughly doubles the index's memory — the
+  // honest cost of highlighting; a production system stores it in a separate doc store.
+  const std::string& Text(DocId doc_id) const;
+
+  // Tombstoned documents still occupying space. Compact() reclaims them.
+  std::size_t DeletedDocumentCount() const { return docs_.size() - live_documents_; }
+
   // Live doc ids in ascending order — the universe a NOT clause complements.
   std::vector<DocId> AllDocuments() const;
 
@@ -89,12 +97,43 @@ class InvertedIndex {
   // against.
   std::size_t UncompressedPostingBytes() const;
 
+  // ---- persistence support (src/search/index_store.h) ----
+  // Postings are exposed per term rather than as one blob so the store can write each list under
+  // its own key, which is what makes an incremental flush possible later.
+  void ForEachPostingList(
+      const std::function<void(const std::string&, const PostingList&)>& visit) const;
+  void SetPostingList(std::string term, PostingList postings);
+
+  // Everything except the posting lists: the document table and the vocabulary.
+  std::string SerializeMetadata() const;
+  bool LoadMetadata(std::string_view bytes);
+
+  // One document as it appears on disk. Public only so the deserializer can build a snapshot
+  // before committing it.
+  struct DocumentRecord {
+    std::string file_id;
+    std::uint32_t length = 0;
+    bool deleted = false;
+    std::map<std::string, std::string> fields;
+    std::string text;
+  };
+
+  // A fully parsed metadata section, adopted only once the whole buffer validates.
+  struct Snapshot {
+    std::vector<DocumentRecord> documents;
+    std::unordered_map<std::string, std::uint64_t> vocabulary;
+  };
+
  private:
+  // Replaces the document table and vocabulary, rebuilding the derived counters.
+  void Adopt(Snapshot snapshot);
+
   struct DocumentMeta {
     std::string file_id;
     std::uint32_t length;
     bool deleted;
     std::map<std::string, std::string> fields;
+    std::string text;
   };
 
   std::unordered_map<std::string, PostingList, TermHash, std::equal_to<>> postings_;
